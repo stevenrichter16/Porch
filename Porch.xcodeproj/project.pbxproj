@@ -6,8 +6,23 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		B05E40622F68CB5100E294D3 /* MarkdownUI in Frameworks */ = {isa = PBXBuildFile; productRef = B05E40612F68CB5200E294D3 /* MarkdownUI */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		B05E406B2F68CB5300E294D3 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = B05E404A2F68CB5000E294D3 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = B05E40512F68CB5000E294D3;
+			remoteInfo = Porch;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFileReference section */
 		B05E40522F68CB5000E294D3 /* Porch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Porch.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		B05E40632F68CB5300E294D3 /* PorchTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PorchTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -16,10 +31,23 @@
 			path = Porch;
 			sourceTree = "<group>";
 		};
+		B05E40642F68CB5300E294D3 /* PorchTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = PorchTests;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		B05E404F2F68CB5000E294D3 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B05E40622F68CB5100E294D3 /* MarkdownUI in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B05E40662F68CB5300E294D3 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -33,6 +61,7 @@
 			isa = PBXGroup;
 			children = (
 				B05E40542F68CB5000E294D3 /* Porch */,
+				B05E40642F68CB5300E294D3 /* PorchTests */,
 				B05E40532F68CB5000E294D3 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -41,6 +70,7 @@
 			isa = PBXGroup;
 			children = (
 				B05E40522F68CB5000E294D3 /* Porch.app */,
+				B05E40632F68CB5300E294D3 /* PorchTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -65,10 +95,34 @@
 			);
 			name = Porch;
 			packageProductDependencies = (
+				B05E40612F68CB5200E294D3 /* MarkdownUI */,
 			);
 			productName = Porch;
 			productReference = B05E40522F68CB5000E294D3 /* Porch.app */;
 			productType = "com.apple.product-type.application";
+		};
+		B05E406A2F68CB5300E294D3 /* PorchTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B05E406D2F68CB5300E294D3 /* Build configuration list for PBXNativeTarget "PorchTests" */;
+			buildPhases = (
+				B05E40652F68CB5300E294D3 /* Sources */,
+				B05E40662F68CB5300E294D3 /* Frameworks */,
+				B05E40692F68CB5300E294D3 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				B05E406C2F68CB5300E294D3 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				B05E40642F68CB5300E294D3 /* PorchTests */,
+			);
+			name = PorchTests;
+			packageProductDependencies = (
+			);
+			productName = PorchTests;
+			productReference = B05E40632F68CB5300E294D3 /* PorchTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
 		};
 /* End PBXNativeTarget section */
 
@@ -83,6 +137,10 @@
 					B05E40512F68CB5000E294D3 = {
 						CreatedOnToolsVersion = 26.1.1;
 					};
+					B05E406A2F68CB5300E294D3 = {
+						CreatedOnToolsVersion = 26.1.1;
+						TestTargetID = B05E40512F68CB5000E294D3;
+					};
 				};
 			};
 			buildConfigurationList = B05E404D2F68CB5000E294D3 /* Build configuration list for PBXProject "Porch" */;
@@ -94,18 +152,29 @@
 			);
 			mainGroup = B05E40492F68CB5000E294D3;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				B05E40602F68CB5200E294D3 /* XCRemoteSwiftPackageReference "swift-markdown-ui" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = B05E40532F68CB5000E294D3 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
 				B05E40512F68CB5000E294D3 /* Porch */,
+				B05E406A2F68CB5300E294D3 /* PorchTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		B05E40502F68CB5000E294D3 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B05E40692F68CB5300E294D3 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -122,7 +191,22 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		B05E40652F68CB5300E294D3 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		B05E406C2F68CB5300E294D3 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = B05E40512F68CB5000E294D3 /* Porch */;
+			targetProxy = B05E406B2F68CB5300E294D3 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		B05E405D2F68CB5100E294D3 /* Debug */ = {
@@ -254,6 +338,8 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsLocalNetworking = YES;
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Porch connects to the local LLM server you configure on your network.";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
@@ -274,13 +360,12 @@
 				REGISTER_APP_GROUPS = YES;
 				SDKROOT = auto;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
-				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2,7";
+				TARGETED_DEVICE_FAMILY = "1,2";
 				XROS_DEPLOYMENT_TARGET = 26.1;
 			};
 			name = Debug;
@@ -298,6 +383,8 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsLocalNetworking = YES;
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Porch connects to the local LLM server you configure on your network.";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
@@ -318,14 +405,67 @@
 				REGISTER_APP_GROUPS = YES;
 				SDKROOT = auto;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
-				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2,7";
+				TARGETED_DEVICE_FAMILY = "1,2";
 				XROS_DEPLOYMENT_TARGET = 26.1;
+			};
+			name = Release;
+		};
+		B05E406E2F68CB5300E294D3 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 77F3383U2A;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = steven.PorchTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = auto;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Porch.app/Porch";
+				TEST_TARGET_NAME = Porch;
+			};
+			name = Debug;
+		};
+		B05E406F2F68CB5300E294D3 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 77F3383U2A;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = steven.PorchTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = auto;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Porch.app/Porch";
+				TEST_TARGET_NAME = Porch;
 			};
 			name = Release;
 		};
@@ -350,7 +490,35 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+		B05E406D2F68CB5300E294D3 /* Build configuration list for PBXNativeTarget "PorchTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B05E406E2F68CB5300E294D3 /* Debug */,
+				B05E406F2F68CB5300E294D3 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		B05E40602F68CB5200E294D3 /* XCRemoteSwiftPackageReference "swift-markdown-ui" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/gonzalezreal/swift-markdown-ui";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.4.1;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		B05E40612F68CB5200E294D3 /* MarkdownUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B05E40602F68CB5200E294D3 /* XCRemoteSwiftPackageReference "swift-markdown-ui" */;
+			productName = MarkdownUI;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = B05E404A2F68CB5000E294D3 /* Project object */;
 }
