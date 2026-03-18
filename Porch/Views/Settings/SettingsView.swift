@@ -74,6 +74,26 @@ struct SettingsView: View {
                     .lineLimit(2 ... 6)
             }
 
+            Section("Connectors") {
+                NavigationLink {
+                    GitHubSettingsView(settings: settings, keychain: KeychainStore())
+                } label: {
+                    HStack {
+                        Label("GitHub", systemImage: "chevron.left.forwardslash.chevron.right")
+                        Spacer()
+                        if settings.isGitHubConnectorEnabled {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundStyle(.green)
+                                .font(.subheadline)
+                        } else {
+                            Text("Off")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+
             Section("Generation") {
                 GenerationParametersTemperatureControl(parameters: parametersBinding)
                 GenerationParametersTopPControl(parameters: parametersBinding)

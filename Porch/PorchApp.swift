@@ -12,7 +12,7 @@ import SwiftData
 struct PorchApp: App {
     var sharedModelContainer: ModelContainer = {
         let isRunningTests = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
-        let schema = Schema(versionedSchema: PorchSchemaV2.self)
+        let schema = Schema(versionedSchema: PorchSchemaV3.self)
         let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: isRunningTests)
 
         do {

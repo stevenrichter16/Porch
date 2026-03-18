@@ -15,6 +15,9 @@ struct MessageBubbleModel: Identifiable, Equatable {
     let isStreaming: Bool
     let isRegenerateEnabled: Bool
     let isEditEnabled: Bool
+    let toolCallName: String?
+    let toolCallArguments: String?
+    let toolCallResult: String?
 
     init(message: ChatMessage, isRegenerateEnabled: Bool, isEditEnabled: Bool) {
         self.id = .persisted(message.id)
@@ -26,6 +29,9 @@ struct MessageBubbleModel: Identifiable, Equatable {
         self.isStreaming = false
         self.isRegenerateEnabled = isRegenerateEnabled
         self.isEditEnabled = isEditEnabled
+        self.toolCallName = message.toolCallName
+        self.toolCallArguments = message.toolCallArgumentsJSON
+        self.toolCallResult = message.toolCallResultJSON
     }
 
     init(
@@ -37,7 +43,10 @@ struct MessageBubbleModel: Identifiable, Equatable {
         finishReason: ChatFinishReason?,
         isStreaming: Bool,
         isRegenerateEnabled: Bool,
-        isEditEnabled: Bool
+        isEditEnabled: Bool,
+        toolCallName: String? = nil,
+        toolCallArguments: String? = nil,
+        toolCallResult: String? = nil
     ) {
         self.id = id
         self.role = role
@@ -48,6 +57,17 @@ struct MessageBubbleModel: Identifiable, Equatable {
         self.isStreaming = isStreaming
         self.isRegenerateEnabled = isRegenerateEnabled
         self.isEditEnabled = isEditEnabled
+        self.toolCallName = toolCallName
+        self.toolCallArguments = toolCallArguments
+        self.toolCallResult = toolCallResult
+    }
+
+    var isToolCall: Bool {
+        toolCallName != nil && role == .assistant && finishReason == .toolCalls
+    }
+
+    var isToolResult: Bool {
+        role == .tool
     }
 }
 
@@ -61,24 +81,33 @@ struct MessageBubble: View, Equatable {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            headerRow
+        if model.isToolCall || model.isToolResult {
+            ToolCallBubble(
+                toolName: model.toolCallName ?? "unknown",
+                arguments: model.toolCallArguments,
+                result: model.toolCallResult,
+                isToolResult: model.isToolResult
+            )
+        } else {
+            VStack(alignment: .leading, spacing: 6) {
+                headerRow
 
-            messageContent
+                messageContent
 
-            if model.isPartial || model.finishReason == .cancelled {
-                statusCapsule(text: "Partial")
-            } else if let reason = model.finishReason, case .length = reason {
-                statusCapsule(text: "Max tokens reached")
+                if model.isPartial || model.finishReason == .cancelled {
+                    statusCapsule(text: "Partial")
+                } else if let reason = model.finishReason, case .length = reason {
+                    statusCapsule(text: "Max tokens reached")
+                }
+
+                if shouldShowFooter {
+                    footerRow
+                }
             }
-
-            if shouldShowFooter {
-                footerRow
-            }
+            .padding(PorchTheme.messageInternalPadding)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(rowBackground)
         }
-        .padding(PorchTheme.messageInternalPadding)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(rowBackground)
     }
 
     private var headerRow: some View {
@@ -160,6 +189,8 @@ struct MessageBubble: View, Equatable {
             PorchTheme.assistantRowBackground
         case .system:
             Color.orange.opacity(0.08)
+        case .tool:
+            Color.purple.opacity(0.06)
         }
     }
 

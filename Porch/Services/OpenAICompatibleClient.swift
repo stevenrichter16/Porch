@@ -89,6 +89,9 @@ actor OpenAICompatibleClient {
             try await validateStreamingHTTP(response: response, lines: bytes.lines)
 
             var finishReason: ChatFinishReason?
+            // Accumulate streaming tool call deltas by index
+            var toolCallAccumulator: [Int: (id: String, name: String, arguments: String)] = [:]
+
             for try await line in bytes.lines {
                 try Task.checkCancellation()
 
@@ -96,6 +99,11 @@ actor OpenAICompatibleClient {
                 case .ignore:
                     continue
                 case .done:
+                    // If we accumulated tool calls, yield them before completing
+                    if !toolCallAccumulator.isEmpty {
+                        let assembled = assembleToolCalls(from: toolCallAccumulator)
+                        continuation.yield(.toolCalls(assembled))
+                    }
                     continuation.yield(.completed(finishReason))
                     continuation.finish()
                     return
@@ -105,12 +113,39 @@ actor OpenAICompatibleClient {
                         continuation.yield(.token(content))
                     }
 
+                    // Accumulate tool call deltas
+                    if let toolCallDeltas = chunk.choices.first?.delta.tool_calls {
+                        for delta in toolCallDeltas {
+                            if let existingEntry = toolCallAccumulator[delta.index] {
+                                // Append arguments fragment
+                                let appendedArgs = existingEntry.arguments + (delta.function?.arguments ?? "")
+                                toolCallAccumulator[delta.index] = (
+                                    id: existingEntry.id,
+                                    name: existingEntry.name,
+                                    arguments: appendedArgs
+                                )
+                            } else {
+                                // First delta for this index
+                                toolCallAccumulator[delta.index] = (
+                                    id: delta.id ?? "",
+                                    name: delta.function?.name ?? "",
+                                    arguments: delta.function?.arguments ?? ""
+                                )
+                            }
+                        }
+                    }
+
                     if let rawReason = chunk.choices.first?.finish_reason {
                         finishReason = ChatFinishReason(apiValue: rawReason)
                     }
                 }
             }
 
+            // Stream ended without [DONE]
+            if !toolCallAccumulator.isEmpty {
+                let assembled = assembleToolCalls(from: toolCallAccumulator)
+                continuation.yield(.toolCalls(assembled))
+            }
             continuation.yield(.completed(finishReason))
             continuation.finish()
         } catch is CancellationError {
@@ -121,10 +156,22 @@ actor OpenAICompatibleClient {
             }
 
             let fallback = try await fetchNonStreamingCompletion(descriptor: descriptor)
-            continuation.yield(.token(fallback.content))
+            if let toolCalls = fallback.toolCalls, !toolCalls.isEmpty {
+                continuation.yield(.toolCalls(toolCalls))
+            } else if let content = fallback.content {
+                continuation.yield(.token(content))
+            }
             continuation.yield(.completed(fallback.finishReason))
             continuation.finish()
         }
+    }
+
+    private func assembleToolCalls(from accumulator: [Int: (id: String, name: String, arguments: String)]) -> [ToolCall] {
+        accumulator
+            .sorted { $0.key < $1.key }
+            .map { _, entry in
+                ToolCall(id: entry.id, function: FunctionCall(name: entry.name, arguments: entry.arguments))
+            }
     }
 
     private func fetchNonStreamingCompletion(descriptor: OpenAIChatRequestDescriptor) async throws -> NonStreamingCompletionResult {
@@ -137,12 +184,22 @@ actor OpenAICompatibleClient {
             throw StreamError.emptyResponse
         }
 
-        let content = firstChoice.message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        let finishReason = firstChoice.finish_reason.map(ChatFinishReason.init(apiValue:))
+
+        // Check for tool calls
+        if let toolCalls = firstChoice.message.tool_calls, !toolCalls.isEmpty {
+            return NonStreamingCompletionResult(
+                content: firstChoice.message.content,
+                toolCalls: toolCalls,
+                finishReason: finishReason
+            )
+        }
+
+        let content = (firstChoice.message.content ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !content.isEmpty else {
             throw StreamError.emptyResponse
         }
 
-        let finishReason = firstChoice.finish_reason.map(ChatFinishReason.init(apiValue:))
         return NonStreamingCompletionResult(content: content, finishReason: finishReason)
     }
 
@@ -211,7 +268,8 @@ actor OpenAICompatibleClient {
             top_p: descriptor.parameters.topP,
             frequency_penalty: descriptor.parameters.frequencyPenalty,
             presence_penalty: descriptor.parameters.presencePenalty,
-            stop: descriptor.parameters.stopSequences.isEmpty ? nil : descriptor.parameters.stopSequences
+            stop: descriptor.parameters.stopSequences.isEmpty ? nil : descriptor.parameters.stopSequences,
+            tools: descriptor.tools?.isEmpty == true ? nil : descriptor.tools
         )
         request.httpBody = try JSONEncoder().encode(body)
         return request
