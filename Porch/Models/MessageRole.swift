@@ -4,6 +4,7 @@ enum MessageRole: String, Codable, CaseIterable, Identifiable {
     case system
     case user
     case assistant
+    case tool
 
     var id: String { rawValue }
 
@@ -15,6 +16,8 @@ enum MessageRole: String, Codable, CaseIterable, Identifiable {
             "You"
         case .assistant:
             "Assistant"
+        case .tool:
+            "Tool"
         }
     }
 }

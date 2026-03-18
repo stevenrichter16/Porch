@@ -4,6 +4,7 @@ enum ChatFinishReason: Codable, Equatable {
     case stop
     case length
     case contentFilter
+    case toolCalls
     case cancelled
     case other(String)
 
@@ -15,6 +16,8 @@ enum ChatFinishReason: Codable, Equatable {
             self = .length
         case "content_filter":
             self = .contentFilter
+        case "tool_calls":
+            self = .toolCalls
         case "cancelled":
             self = .cancelled
         default:
@@ -30,6 +33,8 @@ enum ChatFinishReason: Codable, Equatable {
             "length"
         case .contentFilter:
             "content_filter"
+        case .toolCalls:
+            "tool_calls"
         case .cancelled:
             "cancelled"
         case .other(let value):

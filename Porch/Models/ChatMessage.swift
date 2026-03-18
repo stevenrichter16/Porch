@@ -1,7 +1,7 @@
 import Foundation
 import SwiftData
 
-typealias ChatMessage = PorchSchemaV2.ChatMessage
+typealias ChatMessage = PorchSchemaV3.ChatMessage
 
 enum ChatMessageQueries {
     static func sortedDescriptor(for chatID: UUID) -> FetchDescriptor<ChatMessage> {

@@ -5,6 +5,7 @@ import SwiftData
 @MainActor
 final class ChatViewModel: ObservableObject {
     private static let streamingPublishInterval = Duration.milliseconds(50)
+    private static let maxToolCallRounds = 10
 
     @Published var composerText = ""
     @Published var nextMessageParameterOverride: GenerationParameters?
@@ -19,6 +20,7 @@ final class ChatViewModel: ObservableObject {
     private let client: OpenAICompatibleClient
     private let keychain: KeychainStoreProtocol
     private let apiKeyAccount = "active-server-api-key"
+    private let githubConnector: GitHubConnector
 
     private var streamTask: Task<Void, Never>?
     private var stopRequested = false
@@ -28,13 +30,15 @@ final class ChatViewModel: ObservableObject {
         settings: AppSettings,
         modelContext: ModelContext,
         client: OpenAICompatibleClient = OpenAICompatibleClient(),
-        keychain: KeychainStoreProtocol = KeychainStore()
+        keychain: KeychainStoreProtocol = KeychainStore(),
+        githubConnector: GitHubConnector = GitHubConnector()
     ) {
         self.chat = chat
         self.settings = settings
         self.modelContext = modelContext
         self.client = client
         self.keychain = keychain
+        self.githubConnector = githubConnector
     }
 
     deinit {
@@ -140,58 +144,9 @@ final class ChatViewModel: ObservableObject {
 
         do {
             let configuration = try currentServerConfiguration()
-            let outboundMessages = try buildOutboundMessages()
-            let descriptor = OpenAIChatRequestDescriptor(
-                configuration: configuration,
-                modelID: chat.modelID,
-                messages: outboundMessages,
-                parameters: parameters
-            )
 
             streamTask = Task {
-                var finishReason: ChatFinishReason?
-                var draftText = ""
-                let clock = ContinuousClock()
-                var lastPublishedAt = clock.now
-
-                do {
-                    let stream = await client.streamCompletion(request: descriptor)
-                    for try await event in stream {
-                        switch event {
-                        case .token(let token):
-                            draftText.append(token)
-                            publishStreamingDraftIfNeeded(
-                                draftText,
-                                clock: clock,
-                                lastPublishedAt: &lastPublishedAt
-                            )
-                        case .completed(let reason):
-                            finishReason = reason
-                        }
-                    }
-
-                    flushStreamingDraft(draftText)
-                    if stopRequested {
-                        persistAssistantDraft(text: draftText, isPartial: true, finishReason: .cancelled)
-                    } else {
-                        persistAssistantDraft(text: draftText, isPartial: false, finishReason: finishReason)
-                        infoMessage = finishReason?.userMessage
-                    }
-                } catch is CancellationError {
-                    flushStreamingDraft(draftText)
-                    persistAssistantDraft(text: draftText, isPartial: true, finishReason: .cancelled)
-                } catch {
-                    flushStreamingDraft(draftText)
-                    let hadDraft = !draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    if hadDraft {
-                        let persistedReason: ChatFinishReason? = stopRequested ? .cancelled : finishReason
-                        persistAssistantDraft(text: draftText, isPartial: true, finishReason: persistedReason)
-                    }
-                    if !stopRequested {
-                        errorMessage = error.localizedDescription
-                    }
-                }
-
+                await runToolCallingLoop(configuration: configuration, parameters: parameters)
                 isStreaming = false
                 stopRequested = false
                 streamTask = nil
@@ -200,6 +155,183 @@ final class ChatViewModel: ObservableObject {
             isStreaming = false
             errorMessage = error.localizedDescription
         }
+    }
+
+    private func runToolCallingLoop(configuration: ServerConfiguration, parameters: GenerationParameters) async {
+        var roundsRemaining = Self.maxToolCallRounds
+
+        while roundsRemaining > 0 {
+            roundsRemaining -= 1
+
+            do {
+                let outboundMessages = try buildOutboundMessages()
+                let tools = resolveToolDefinitions()
+                let descriptor = OpenAIChatRequestDescriptor(
+                    configuration: configuration,
+                    modelID: chat.modelID,
+                    messages: outboundMessages,
+                    parameters: parameters,
+                    tools: tools
+                )
+
+                let result = await streamSingleRound(descriptor: descriptor)
+
+                switch result {
+                case .textCompleted(let finishReason):
+                    infoMessage = finishReason?.userMessage
+                    return
+
+                case .toolCallsReceived(let toolCalls, let assistantContent):
+                    // Persist the assistant message that requested tool calls
+                    persistAssistantToolCallMessage(content: assistantContent, toolCalls: toolCalls)
+
+                    // Execute each tool call and persist results
+                    for toolCall in toolCalls {
+                        if stopRequested { return }
+                        streamingText = "Calling \(humanReadableToolName(toolCall.function.name))..."
+                        let result = await executeToolCall(toolCall)
+                        persistToolResultMessage(toolCall: toolCall, result: result)
+                    }
+                    streamingText = ""
+                    // Continue the loop for another round
+
+                case .cancelled:
+                    return
+
+                case .error(let error):
+                    errorMessage = error.localizedDescription
+                    return
+                }
+            } catch {
+                errorMessage = error.localizedDescription
+                return
+            }
+        }
+
+        // Safety limit reached
+        infoMessage = "Stopped after \(Self.maxToolCallRounds) tool-calling rounds."
+    }
+
+    private enum RoundResult {
+        case textCompleted(ChatFinishReason?)
+        case toolCallsReceived([ToolCall], assistantContent: String?)
+        case cancelled
+        case error(Error)
+    }
+
+    private func streamSingleRound(descriptor: OpenAIChatRequestDescriptor) async -> RoundResult {
+        var draftText = ""
+        var finishReason: ChatFinishReason?
+        var receivedToolCalls: [ToolCall]?
+        let clock = ContinuousClock()
+        var lastPublishedAt = clock.now
+
+        do {
+            let stream = await client.streamCompletion(request: descriptor)
+            for try await event in stream {
+                switch event {
+                case .token(let token):
+                    draftText.append(token)
+                    publishStreamingDraftIfNeeded(
+                        draftText,
+                        clock: clock,
+                        lastPublishedAt: &lastPublishedAt
+                    )
+                case .toolCalls(let calls):
+                    receivedToolCalls = calls
+                case .completed(let reason):
+                    finishReason = reason
+                }
+            }
+
+            flushStreamingDraft(draftText)
+
+            if stopRequested {
+                persistAssistantDraft(text: draftText, isPartial: true, finishReason: .cancelled)
+                return .cancelled
+            }
+
+            // If we received tool calls, return them for the loop to handle
+            if let toolCalls = receivedToolCalls, !toolCalls.isEmpty {
+                let content = draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : draftText
+                streamingText = ""
+                return .toolCallsReceived(toolCalls, assistantContent: content)
+            }
+
+            // Normal text completion
+            persistAssistantDraft(text: draftText, isPartial: false, finishReason: finishReason)
+            return .textCompleted(finishReason)
+
+        } catch is CancellationError {
+            flushStreamingDraft(draftText)
+            persistAssistantDraft(text: draftText, isPartial: true, finishReason: .cancelled)
+            return .cancelled
+        } catch {
+            flushStreamingDraft(draftText)
+            let hadDraft = !draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            if hadDraft {
+                let persistedReason: ChatFinishReason? = stopRequested ? .cancelled : finishReason
+                persistAssistantDraft(text: draftText, isPartial: true, finishReason: persistedReason)
+            }
+            if stopRequested {
+                return .cancelled
+            }
+            return .error(error)
+        }
+    }
+
+    private func resolveToolDefinitions() -> [ToolDefinition]? {
+        guard settings.isGitHubConnectorEnabled, githubConnector.isConfigured else {
+            return nil
+        }
+        let tools = githubConnector.toolDefinitions
+        return tools.isEmpty ? nil : tools
+    }
+
+    private func executeToolCall(_ toolCall: ToolCall) async -> String {
+        do {
+            return try await githubConnector.execute(
+                toolName: toolCall.function.name,
+                arguments: toolCall.function.arguments
+            )
+        } catch {
+            return "{\"error\": \"\(error.localizedDescription)\"}"
+        }
+    }
+
+    private func persistAssistantToolCallMessage(content: String?, toolCalls: [ToolCall]) {
+        // For simplicity, persist the first tool call's metadata on the assistant message.
+        // If there are multiple tool calls, they'll each get their own tool result message.
+        let encoder = JSONEncoder()
+        let toolCallsJSON = (try? encoder.encode(toolCalls)).flatMap { String(data: $0, encoding: .utf8) }
+
+        let assistantMessage = ChatMessage(
+            role: .assistant,
+            content: content ?? "",
+            thread: chat,
+            isPartial: false,
+            finishReason: .toolCalls,
+            toolCallName: toolCalls.first?.function.name,
+            toolCallArgumentsJSON: toolCallsJSON
+        )
+        modelContext.insert(assistantMessage)
+        chat.applyMessageMutation(latestMessage: assistantMessage)
+        try? modelContext.save()
+        streamingText = ""
+    }
+
+    private func persistToolResultMessage(toolCall: ToolCall, result: String) {
+        let toolMessage = ChatMessage(
+            role: .tool,
+            content: result,
+            thread: chat,
+            toolCallID: toolCall.id,
+            toolCallName: toolCall.function.name,
+            toolCallResultJSON: result
+        )
+        modelContext.insert(toolMessage)
+        chat.applyMessageMutation(latestMessage: toolMessage)
+        try? modelContext.save()
     }
 
     private func currentServerConfiguration() throws -> ServerConfiguration {
@@ -217,12 +349,41 @@ final class ChatViewModel: ObservableObject {
 
         let persistedMessages = try ChatMessageQueries.fetchSortedMessages(for: chat, in: modelContext)
         for message in persistedMessages {
-            messages.append(
-                OpenAIChatMessage(
+            switch message.role {
+            case .assistant where message.finishReason == .toolCalls:
+                // Reconstruct the assistant message with tool_calls
+                var toolCalls: [ToolCall] = []
+                if let json = message.toolCallArgumentsJSON, let data = json.data(using: .utf8) {
+                    toolCalls = (try? JSONDecoder().decode([ToolCall].self, from: data)) ?? []
+                }
+                if toolCalls.isEmpty, let name = message.toolCallName {
+                    // Fallback: reconstruct a single tool call
+                    toolCalls = [ToolCall(id: "call_\(message.id.uuidString.prefix(8))", function: FunctionCall(name: name, arguments: "{}"))]
+                }
+                let msg = OpenAIChatMessage(
                     role: message.role.rawValue,
-                    content: message.content
+                    content: message.content.isEmpty ? nil : message.content,
+                    toolCalls: toolCalls
                 )
-            )
+                messages.append(msg)
+
+            case .tool:
+                let msg = OpenAIChatMessage(
+                    role: message.role.rawValue,
+                    content: message.toolCallResultJSON ?? message.content,
+                    toolCallID: message.toolCallID ?? "",
+                    name: message.toolCallName ?? ""
+                )
+                messages.append(msg)
+
+            default:
+                messages.append(
+                    OpenAIChatMessage(
+                        role: message.role.rawValue,
+                        content: message.content
+                    )
+                )
+            }
         }
 
         return messages
@@ -273,5 +434,18 @@ final class ChatViewModel: ObservableObject {
     ) -> Bool {
         guard targetIndex == 0 else { return false }
         return chat.isUntitled || chat.title == ChatTitleGenerator.title(for: originalContent)
+    }
+
+    private func humanReadableToolName(_ name: String) -> String {
+        let mapping: [String: String] = [
+            "github_search_repos": "GitHub Search",
+            "github_get_repo_contents": "GitHub Browse Files",
+            "github_get_file_content": "GitHub Read File",
+            "github_list_issues": "GitHub Issues",
+            "github_get_issue": "GitHub Issue",
+            "github_list_pull_requests": "GitHub Pull Requests",
+            "github_get_pull_request": "GitHub Pull Request"
+        ]
+        return mapping[name] ?? name
     }
 }
