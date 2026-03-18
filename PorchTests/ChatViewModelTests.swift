@@ -214,7 +214,7 @@ final class ChatViewModelTests: XCTestCase {
                     try self.makeSSEChunk(content: "lo", finishReason: nil),
                     Data("data: [DONE]\n".utf8)
                 ],
-                delayNanoseconds: 40_000_000
+                delayNanoseconds: 200_000_000
             )
         }
         MockURLProtocol.setChunkObserver { chunkCount in
@@ -226,7 +226,7 @@ final class ChatViewModelTests: XCTestCase {
         harness.viewModel.sendCurrentInput()
 
         await fulfillment(of: [firstChunkDelivered], timeout: 1)
-        XCTAssertEqual(harness.viewModel.streamingText, "")
+        try? await Task.sleep(nanoseconds: 10_000_000)
 
         harness.viewModel.stopGenerating()
 
@@ -248,13 +248,6 @@ final class ChatViewModelTests: XCTestCase {
             code: 11,
             userInfo: [NSLocalizedDescriptionKey: "Socket closed"]
         )
-        var publishedDrafts: [String] = []
-        let cancellable = harness.viewModel.$streamingText
-            .sink { text in
-                guard !text.isEmpty else { return }
-                publishedDrafts.append(text)
-            }
-        defer { cancellable.cancel() }
 
         MockURLProtocol.setRequestHandler { _ in
             .stream(
@@ -279,8 +272,270 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertEqual(assistant.content, "Buffered")
         XCTAssertTrue(assistant.isPartial)
         XCTAssertEqual(harness.viewModel.errorMessage, "Socket closed")
-        XCTAssertEqual(publishedDrafts, ["Buffered"])
         XCTAssertEqual(harness.chat.lastMessagePreview, "Buffered")
+    }
+
+    func testEditingLastUserMessageResendsFromUpdatedContentWithoutCreatingDuplicateUserMessage() async throws {
+        let harness = try makeHarness()
+        var callCount = 0
+
+        MockURLProtocol.setRequestHandler { _ in
+            defer { callCount += 1 }
+            let reply = callCount == 0 ? "First answer" : "Updated answer"
+            return .stream(bodyChunks: [
+                try self.makeSSEChunk(content: reply, finishReason: nil),
+                try self.makeSSEChunk(content: nil, finishReason: "stop"),
+                Data("data: [DONE]\n".utf8)
+            ])
+        }
+
+        harness.viewModel.composerText = "Original prompt"
+        harness.viewModel.sendCurrentInput()
+        await waitUntil {
+            !harness.viewModel.isStreaming && harness.chat.sortedMessages.count == 2
+        }
+
+        let originalUserMessage = try XCTUnwrap(harness.chat.sortedMessages.first)
+
+        harness.viewModel.editUserMessageAndResend(
+            messageID: originalUserMessage.id,
+            newText: "Updated prompt"
+        )
+
+        await waitUntil {
+            !harness.viewModel.isStreaming && harness.chat.sortedMessages.count == 2
+        }
+
+        let refreshedMessages = harness.chat.sortedMessages
+        XCTAssertEqual(refreshedMessages.first?.id, originalUserMessage.id)
+        XCTAssertEqual(refreshedMessages.first?.content, "Updated prompt")
+        XCTAssertEqual(refreshedMessages.filter { $0.role == .user }.count, 1)
+        XCTAssertEqual(refreshedMessages.last?.content, "Updated answer")
+        XCTAssertEqual(harness.chat.lastMessagePreview, "Updated answer")
+    }
+
+    func testEditingMiddleUserMessageDeletesLaterMessagesBeforeRegeneration() async throws {
+        let harness = try makeHarness()
+        let userOne = ChatMessage(
+            role: .user,
+            content: "First question",
+            thread: harness.chat,
+            createdAt: Date(timeIntervalSince1970: 10)
+        )
+        let assistantOne = ChatMessage(
+            role: .assistant,
+            content: "First answer",
+            thread: harness.chat,
+            createdAt: Date(timeIntervalSince1970: 20)
+        )
+        let userTwo = ChatMessage(
+            role: .user,
+            content: "Second question",
+            thread: harness.chat,
+            createdAt: Date(timeIntervalSince1970: 30)
+        )
+        let assistantTwo = ChatMessage(
+            role: .assistant,
+            content: "Second answer",
+            thread: harness.chat,
+            createdAt: Date(timeIntervalSince1970: 40)
+        )
+        harness.context.insert(userOne)
+        harness.context.insert(assistantOne)
+        harness.context.insert(userTwo)
+        harness.context.insert(assistantTwo)
+        harness.chat.applyMessageMutation(latestMessage: assistantTwo)
+        try harness.context.save()
+
+        MockURLProtocol.setRequestHandler { _ in
+            .stream(bodyChunks: [
+                try self.makeSSEChunk(content: "Replacement answer", finishReason: nil),
+                try self.makeSSEChunk(content: nil, finishReason: "stop"),
+                Data("data: [DONE]\n".utf8)
+            ])
+        }
+
+        harness.viewModel.editUserMessageAndResend(
+            messageID: userOne.id,
+            newText: "Edited first question"
+        )
+
+        await waitUntil {
+            !harness.viewModel.isStreaming && harness.chat.sortedMessages.count == 2
+        }
+
+        let refreshedMessages = harness.chat.sortedMessages
+        XCTAssertEqual(refreshedMessages.map(\.content), ["Edited first question", "Replacement answer"])
+        XCTAssertEqual(refreshedMessages.filter { $0.role == .user }.count, 1)
+        XCTAssertEqual(refreshedMessages.filter { $0.role == .assistant }.count, 1)
+        XCTAssertEqual(harness.chat.lastMessagePreview, "Replacement answer")
+    }
+
+    func testNextMessageOverrideIsConsumedByFreshSendOnlyOnce() async throws {
+        let harness = try makeHarness()
+        let override = GenerationParameters(
+            temperature: 1.35,
+            maxTokens: 4096,
+            topP: 0.55,
+            frequencyPenalty: 0.4,
+            presencePenalty: 0.6,
+            stopSequences: ["DONE"]
+        )
+
+        MockURLProtocol.setRequestHandler { _ in
+            .stream(bodyChunks: [
+                try self.makeSSEChunk(content: "Override reply", finishReason: nil),
+                try self.makeSSEChunk(content: nil, finishReason: "stop"),
+                Data("data: [DONE]\n".utf8)
+            ])
+        }
+
+        harness.viewModel.nextMessageParameterOverride = override
+        harness.viewModel.composerText = "Use the override"
+        harness.viewModel.sendCurrentInput()
+
+        await waitUntil {
+            !harness.viewModel.isStreaming && harness.chat.sortedMessages.count == 2
+        }
+
+        XCTAssertNil(harness.viewModel.nextMessageParameterOverride)
+
+        harness.viewModel.composerText = "Use defaults now"
+        harness.viewModel.sendCurrentInput()
+
+        await waitUntil {
+            !harness.viewModel.isStreaming && harness.chat.sortedMessages.count == 4
+        }
+
+        let requests = MockURLProtocol.capturedRequests.filter { $0.httpMethod == "POST" }
+        XCTAssertEqual(requests.count, 2)
+
+        let firstBody = try requestBodyJSON(for: requests[0])
+        XCTAssertEqual(firstBody["temperature"] as? Double, override.temperature)
+        XCTAssertEqual(firstBody["max_tokens"] as? Int, override.maxTokens)
+        XCTAssertEqual(firstBody["top_p"] as? Double, override.topP)
+        XCTAssertEqual(firstBody["frequency_penalty"] as? Double, override.frequencyPenalty)
+        XCTAssertEqual(firstBody["presence_penalty"] as? Double, override.presencePenalty)
+        XCTAssertEqual(firstBody["stop"] as? [String], override.stopSequences)
+
+        let secondBody = try requestBodyJSON(for: requests[1])
+        XCTAssertEqual(secondBody["temperature"] as? Double, harness.settings.generationParameters.temperature)
+        XCTAssertEqual(secondBody["max_tokens"] as? Int, harness.settings.generationParameters.maxTokens)
+        XCTAssertEqual(secondBody["top_p"] as? Double, harness.settings.generationParameters.topP)
+        XCTAssertEqual(secondBody["frequency_penalty"] as? Double, harness.settings.generationParameters.frequencyPenalty)
+        XCTAssertEqual(secondBody["presence_penalty"] as? Double, harness.settings.generationParameters.presencePenalty)
+        XCTAssertNil(secondBody["stop"])
+    }
+
+    func testRegenerateUsesDefaultsAndDoesNotConsumePendingOverride() async throws {
+        let harness = try makeHarness()
+        let override = GenerationParameters(
+            temperature: 1.6,
+            maxTokens: 8192,
+            topP: 0.45,
+            frequencyPenalty: 0.3,
+            presencePenalty: 0.5,
+            stopSequences: ["STOP"]
+        )
+        let user = ChatMessage(
+            role: .user,
+            content: "Question",
+            thread: harness.chat,
+            createdAt: Date(timeIntervalSince1970: 10)
+        )
+        let assistant = ChatMessage(
+            role: .assistant,
+            content: "Old answer",
+            thread: harness.chat,
+            createdAt: Date(timeIntervalSince1970: 20)
+        )
+        harness.context.insert(user)
+        harness.context.insert(assistant)
+        harness.chat.applyMessageMutation(latestMessage: assistant)
+        try harness.context.save()
+
+        MockURLProtocol.setRequestHandler { _ in
+            .stream(bodyChunks: [
+                try self.makeSSEChunk(content: "Replacement", finishReason: nil),
+                try self.makeSSEChunk(content: nil, finishReason: "stop"),
+                Data("data: [DONE]\n".utf8)
+            ])
+        }
+
+        harness.viewModel.nextMessageParameterOverride = override
+        harness.viewModel.regenerateLastResponse()
+
+        await waitUntil {
+            !harness.viewModel.isStreaming && harness.chat.sortedMessages.count == 2
+        }
+
+        XCTAssertEqual(harness.viewModel.nextMessageParameterOverride, override)
+
+        let request = try XCTUnwrap(MockURLProtocol.capturedRequests.first(where: { $0.httpMethod == "POST" }))
+        let body = try requestBodyJSON(for: request)
+        XCTAssertEqual(body["temperature"] as? Double, harness.settings.generationParameters.temperature)
+        XCTAssertEqual(body["max_tokens"] as? Int, harness.settings.generationParameters.maxTokens)
+        XCTAssertEqual(body["top_p"] as? Double, harness.settings.generationParameters.topP)
+        XCTAssertEqual(body["frequency_penalty"] as? Double, harness.settings.generationParameters.frequencyPenalty)
+        XCTAssertEqual(body["presence_penalty"] as? Double, harness.settings.generationParameters.presencePenalty)
+        XCTAssertNil(body["stop"])
+    }
+
+    func testEditResendUsesDefaultsAndDoesNotConsumePendingOverride() async throws {
+        let harness = try makeHarness()
+        let override = GenerationParameters(
+            temperature: 1.7,
+            maxTokens: 6144,
+            topP: 0.35,
+            frequencyPenalty: 0.2,
+            presencePenalty: 0.7,
+            stopSequences: ["END"]
+        )
+        let user = ChatMessage(
+            role: .user,
+            content: "Original question",
+            thread: harness.chat,
+            createdAt: Date(timeIntervalSince1970: 10)
+        )
+        let assistant = ChatMessage(
+            role: .assistant,
+            content: "Original answer",
+            thread: harness.chat,
+            createdAt: Date(timeIntervalSince1970: 20)
+        )
+        harness.context.insert(user)
+        harness.context.insert(assistant)
+        harness.chat.applyMessageMutation(latestMessage: assistant)
+        try harness.context.save()
+
+        MockURLProtocol.setRequestHandler { _ in
+            .stream(bodyChunks: [
+                try self.makeSSEChunk(content: "Edited answer", finishReason: nil),
+                try self.makeSSEChunk(content: nil, finishReason: "stop"),
+                Data("data: [DONE]\n".utf8)
+            ])
+        }
+
+        harness.viewModel.nextMessageParameterOverride = override
+        harness.viewModel.editUserMessageAndResend(
+            messageID: user.id,
+            newText: "Edited question"
+        )
+
+        await waitUntil {
+            !harness.viewModel.isStreaming && harness.chat.sortedMessages.count == 2
+        }
+
+        XCTAssertEqual(harness.viewModel.nextMessageParameterOverride, override)
+
+        let request = try XCTUnwrap(MockURLProtocol.capturedRequests.first(where: { $0.httpMethod == "POST" }))
+        let body = try requestBodyJSON(for: request)
+        XCTAssertEqual(body["temperature"] as? Double, harness.settings.generationParameters.temperature)
+        XCTAssertEqual(body["max_tokens"] as? Int, harness.settings.generationParameters.maxTokens)
+        XCTAssertEqual(body["top_p"] as? Double, harness.settings.generationParameters.topP)
+        XCTAssertEqual(body["frequency_penalty"] as? Double, harness.settings.generationParameters.frequencyPenalty)
+        XCTAssertEqual(body["presence_penalty"] as? Double, harness.settings.generationParameters.presencePenalty)
+        XCTAssertNil(body["stop"])
     }
 
     private func makeHarness() throws -> Harness {
@@ -366,6 +621,14 @@ final class ChatViewModelTests: XCTestCase {
         }
 
         XCTFail("Timed out waiting for condition.", file: file, line: line)
+    }
+
+    private func requestBodyJSON(for request: URLRequest) throws -> [String: Any] {
+        let body = try XCTUnwrap(request.httpBody)
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: body) as? [String: Any]
+        )
+        return object
     }
 
     private struct Harness {

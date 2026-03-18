@@ -7,6 +7,7 @@ final class ChatViewModel: ObservableObject {
     private static let streamingPublishInterval = Duration.milliseconds(50)
 
     @Published var composerText = ""
+    @Published var nextMessageParameterOverride: GenerationParameters?
     @Published var streamingText = ""
     @Published var isStreaming = false
     @Published var errorMessage: String?
@@ -40,11 +41,17 @@ final class ChatViewModel: ObservableObject {
         streamTask?.cancel()
     }
 
+    var defaultGenerationParameters: GenerationParameters {
+        settings.generationParameters
+    }
+
     func sendCurrentInput() {
         let trimmed = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        let parameters = nextMessageParameterOverride ?? settings.generationParameters
+        nextMessageParameterOverride = nil
         composerText = ""
-        send(messageText: trimmed)
+        send(messageText: trimmed, parameters: parameters)
     }
 
     func stopGenerating() {
@@ -62,7 +69,46 @@ final class ChatViewModel: ObservableObject {
         let previousLatestMessage = messages.dropLast().last
         chat.applyMessageMutation(latestMessage: previousLatestMessage)
         try? modelContext.save()
-        startStreamingConversation()
+        startStreamingConversation(parameters: settings.generationParameters)
+    }
+
+    func editUserMessageAndResend(messageID: UUID, newText: String) {
+        let trimmed = newText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        guard !isStreaming else { return }
+
+        do {
+            let persistedMessages = try ChatMessageQueries.fetchSortedMessages(for: chat, in: modelContext)
+            guard
+                let targetIndex = persistedMessages.firstIndex(where: { $0.id == messageID }),
+                persistedMessages[targetIndex].role == .user
+            else {
+                errorMessage = "That message could not be edited."
+                return
+            }
+
+            let targetMessage = persistedMessages[targetIndex]
+            let originalContent = targetMessage.content
+            let laterMessages = persistedMessages.suffix(from: targetIndex + 1)
+
+            targetMessage.content = trimmed
+            for laterMessage in laterMessages {
+                modelContext.delete(laterMessage)
+            }
+
+            if shouldRefreshTitle(
+                afterEditingFirstUserMessageAt: targetIndex,
+                originalContent: originalContent
+            ) {
+                chat.title = ChatTitleGenerator.title(for: trimmed)
+            }
+
+            chat.applyMessageMutation(latestMessage: targetMessage)
+            try modelContext.save()
+            startStreamingConversation(parameters: settings.generationParameters)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 
     func clearError() {
@@ -73,7 +119,7 @@ final class ChatViewModel: ObservableObject {
         infoMessage = nil
     }
 
-    private func send(messageText: String) {
+    private func send(messageText: String, parameters: GenerationParameters) {
         let userMessage = ChatMessage(role: .user, content: messageText, thread: chat)
         modelContext.insert(userMessage)
         if chat.isUntitled {
@@ -81,10 +127,10 @@ final class ChatViewModel: ObservableObject {
         }
         chat.applyMessageMutation(latestMessage: userMessage)
         try? modelContext.save()
-        startStreamingConversation()
+        startStreamingConversation(parameters: parameters)
     }
 
-    private func startStreamingConversation() {
+    private func startStreamingConversation(parameters: GenerationParameters) {
         streamTask?.cancel()
         errorMessage = nil
         infoMessage = nil
@@ -99,7 +145,7 @@ final class ChatViewModel: ObservableObject {
                 configuration: configuration,
                 modelID: chat.modelID,
                 messages: outboundMessages,
-                parameters: settings.generationParameters
+                parameters: parameters
             )
 
             streamTask = Task {
@@ -219,5 +265,13 @@ final class ChatViewModel: ObservableObject {
         chat.applyMessageMutation(latestMessage: assistantMessage)
         try? modelContext.save()
         streamingText = ""
+    }
+
+    private func shouldRefreshTitle(
+        afterEditingFirstUserMessageAt targetIndex: Int,
+        originalContent: String
+    ) -> Bool {
+        guard targetIndex == 0 else { return false }
+        return chat.isUntitled || chat.title == ChatTitleGenerator.title(for: originalContent)
     }
 }

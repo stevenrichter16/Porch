@@ -1,10 +1,12 @@
+import Foundation
 import SwiftUI
 
 struct ChatListView: View {
     let chats: [ChatThread]
-    @Binding var selectedChat: ChatThread?
+    @Binding var selectedChatID: UUID?
+    let availableModels: [RemoteModel]
     let isReadyForChat: Bool
-    let onCreateChat: () -> Void
+    let onCreateChat: (String) -> Void
     let onOpenSettings: () -> Void
     let onRenameChat: (ChatThread, String) -> Void
     let onDeleteChat: (ChatThread) -> Void
@@ -12,77 +14,26 @@ struct ChatListView: View {
     @State private var chatToRename: ChatThread?
     @State private var renameText = ""
     @State private var chatToDelete: ChatThread?
+    @State private var isShowingRenameAlert = false
+    @State private var isShowingDeleteDialog = false
 
     var body: some View {
-        List(selection: $selectedChat) {
-            if chats.isEmpty {
-                ContentUnavailableView(
-                    isReadyForChat ? "No Chats Yet" : "Setup Required",
-                    systemImage: isReadyForChat ? "bubble.left.and.bubble.right" : "server.rack",
-                    description: Text(
-                        isReadyForChat
-                        ? "Create a new chat to start talking to your Mac-hosted model."
-                        : "Validate your server connection before creating chats."
-                    )
-                )
-                .listRowBackground(Color.clear)
-            } else {
-                ForEach(chats) { chat in
-                    ChatRow(chat: chat)
-                        .tag(chat)
-                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                            Button(role: .destructive) {
-                                chatToDelete = chat
-                            } label: {
-                                Label("Delete", systemImage: "trash")
-                            }
+        chatList
+    }
 
-                            Button {
-                                chatToRename = chat
-                                renameText = chat.title
-                            } label: {
-                                Label("Rename", systemImage: "pencil")
-                            }
-                            .tint(.orange)
-                        }
-                        .contextMenu {
-                            Button {
-                                chatToRename = chat
-                                renameText = chat.title
-                            } label: {
-                                Label("Rename", systemImage: "pencil")
-                            }
-
-                            Button(role: .destructive) {
-                                chatToDelete = chat
-                            } label: {
-                                Label("Delete", systemImage: "trash")
-                            }
-                        }
-                }
-            }
+    private var chatList: some View {
+        List(selection: $selectedChatID) {
+            chatListContent
         }
+        .scrollContentBackground(.hidden)
+        .background(PorchTheme.chatBackground)
+        .tint(PorchTheme.accent)
         .navigationTitle("Porch")
-        .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                Button(action: onOpenSettings) {
-                    Image(systemName: "slider.horizontal.3")
-                }
-            }
-
-            ToolbarItem(placement: .topBarTrailing) {
-                Button(action: onCreateChat) {
-                    Image(systemName: "square.and.pencil")
-                }
-                .disabled(!isReadyForChat)
-            }
-        }
-        .alert("Rename Chat", isPresented: renameAlertIsPresented) {
+        .toolbar { toolbarContent }
+        .alert("Rename Chat", isPresented: $isShowingRenameAlert, presenting: chatToRename) { chat in
             TextField("Chat name", text: $renameText)
             Button("Save") {
-                if let chatToRename {
-                    onRenameChat(chatToRename, renameText)
-                }
+                onRenameChat(chat, renameText)
                 chatToRename = nil
             }
             Button("Cancel", role: .cancel) {
@@ -91,51 +42,140 @@ struct ChatListView: View {
         }
         .confirmationDialog(
             "Delete this chat?",
-            isPresented: deleteDialogIsPresented,
-            titleVisibility: .visible
-        ) {
+            isPresented: $isShowingDeleteDialog,
+            titleVisibility: .visible,
+            presenting: chatToDelete
+        ) { chat in
             Button("Delete", role: .destructive) {
-                if let chatToDelete {
-                    onDeleteChat(chatToDelete)
-                }
+                onDeleteChat(chat)
                 chatToDelete = nil
             }
-        } message: {
+            Button("Cancel", role: .cancel) {
+                chatToDelete = nil
+            }
+        } message: { _ in
             Text("This removes the conversation and its messages from the device.")
         }
     }
 
-    private var renameAlertIsPresented: Binding<Bool> {
-        Binding(
-            get: { chatToRename != nil },
-            set: { if !$0 { chatToRename = nil } }
-        )
+    @ViewBuilder
+    private var chatListContent: some View {
+        if chats.isEmpty {
+            ContentUnavailableView(
+                isReadyForChat ? "No Chats Yet" : "Setup Required",
+                systemImage: isReadyForChat ? "bubble.left.and.bubble.right" : "server.rack",
+                description: Text(
+                    isReadyForChat
+                    ? "Create a new chat to start talking to your Mac-hosted model."
+                    : "Validate your server connection before creating chats."
+                )
+            )
+            .listRowBackground(Color.clear)
+        } else {
+            ForEach(chats) { chat in
+                chatRow(chat)
+            }
+        }
     }
 
-    private var deleteDialogIsPresented: Binding<Bool> {
-        Binding(
-            get: { chatToDelete != nil },
-            set: { if !$0 { chatToDelete = nil } }
-        )
+    private var toolbarContent: some ToolbarContent {
+        Group {
+            ToolbarItem(placement: .topBarLeading) {
+                Button(action: onOpenSettings) {
+                    Image(systemName: "slider.horizontal.3")
+                }
+            }
+
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    ForEach(availableModels) { model in
+                        Button {
+                            onCreateChat(model.id)
+                        } label: {
+                            Label(model.id, systemImage: "cpu")
+                        }
+                    }
+                } label: {
+                    Image(systemName: "square.and.pencil")
+                }
+                .disabled(!isReadyForChat || availableModels.isEmpty)
+            }
+        }
+    }
+
+    private func chatRow(_ chat: ChatThread) -> some View {
+        ChatRow(chat: chat)
+            .tag(chat.id)
+            .listRowBackground(PorchTheme.chatBackground)
+            .listRowSeparatorTint(PorchTheme.messageDivider)
+            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                Button(role: .destructive) {
+                    presentDelete(chat)
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+
+                Button {
+                    presentRename(chat)
+                } label: {
+                    Label("Rename", systemImage: "pencil")
+                }
+                .tint(PorchTheme.accent)
+            }
+            .contextMenu {
+                Button {
+                    presentRename(chat)
+                } label: {
+                    Label("Rename", systemImage: "pencil")
+                }
+
+                Button(role: .destructive) {
+                    presentDelete(chat)
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+            }
+    }
+
+    private func presentRename(_ chat: ChatThread) {
+        chatToRename = chat
+        renameText = chat.title
+        isShowingRenameAlert = true
+    }
+
+    private func presentDelete(_ chat: ChatThread) {
+        chatToDelete = chat
+        isShowingDeleteDialog = true
     }
 }
 
 private struct ChatRow: View {
     let chat: ChatThread
 
+    private static let relativeFormatter: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
+        return formatter
+    }()
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .top) {
                 Text(chat.title)
-                    .font(.headline)
+                    .font(.subheadline.weight(.semibold))
                     .lineLimit(1)
 
                 Spacer(minLength: 12)
 
-                Text(chat.updatedAt, style: .relative)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Text(updatedAtText)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
             }
+
+            Label(chat.modelID, systemImage: "cpu")
+                .font(.caption2)
+                .foregroundStyle(PorchTheme.assistantRoleLabel)
+                .lineLimit(1)
 
             if !chat.lastMessagePreview.isEmpty {
                 Text(chat.lastMessagePreview)
@@ -148,6 +188,10 @@ private struct ChatRow: View {
                     .foregroundStyle(.tertiary)
             }
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 6)
+    }
+
+    private var updatedAtText: String {
+        Self.relativeFormatter.localizedString(for: chat.updatedAt, relativeTo: Date())
     }
 }

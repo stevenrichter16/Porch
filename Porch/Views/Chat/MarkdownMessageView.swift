@@ -6,7 +6,6 @@ struct MarkdownMessageView: View {
 
     var body: some View {
         Markdown(content)
-            .markdownTheme(.gitHub)
-            .textSelection(.enabled)
+            .markdownTheme(PorchTheme.markdownTheme)
     }
 }

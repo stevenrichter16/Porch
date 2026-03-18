@@ -75,50 +75,12 @@ struct SettingsView: View {
             }
 
             Section("Generation") {
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text("Temperature")
-                        Spacer()
-                        Text(viewModel.parameters.temperature.formatted(.number.precision(.fractionLength(2))))
-                            .foregroundStyle(.secondary)
-                    }
-                    Slider(
-                        value: temperatureBinding,
-                        in: 0 ... 2,
-                        step: 0.05
-                    )
-                }
-
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text("Top-p")
-                        Spacer()
-                        Text(viewModel.parameters.topP.formatted(.number.precision(.fractionLength(2))))
-                            .foregroundStyle(.secondary)
-                    }
-                    Slider(value: topPBinding, in: 0 ... 1, step: 0.05)
-                }
-
-                Stepper(value: maxTokensBinding, in: 256 ... 16384, step: 256) {
-                    LabeledContent("Max tokens", value: "\(viewModel.parameters.maxTokens)")
-                }
-
-                Stepper(value: frequencyPenaltyBinding, in: -2 ... 2, step: 0.1) {
-                    LabeledContent(
-                        "Frequency penalty",
-                        value: viewModel.parameters.frequencyPenalty.formatted(.number.precision(.fractionLength(1)))
-                    )
-                }
-
-                Stepper(value: presencePenaltyBinding, in: -2 ... 2, step: 0.1) {
-                    LabeledContent(
-                        "Presence penalty",
-                        value: viewModel.parameters.presencePenalty.formatted(.number.precision(.fractionLength(1)))
-                    )
-                }
-
-                TextField("Stop sequences, one per line", text: stopSequencesBinding, axis: .vertical)
-                    .lineLimit(2 ... 5)
+                GenerationParametersTemperatureControl(parameters: parametersBinding)
+                GenerationParametersTopPControl(parameters: parametersBinding)
+                GenerationParametersMaxTokensControl(parameters: parametersBinding)
+                GenerationParametersFrequencyPenaltyControl(parameters: parametersBinding)
+                GenerationParametersPresencePenaltyControl(parameters: parametersBinding)
+                GenerationParametersStopSequencesField(parameters: parametersBinding)
             }
 
             Section {
@@ -180,45 +142,10 @@ struct SettingsView: View {
         }
     }
 
-    private var temperatureBinding: Binding<Double> {
+    private var parametersBinding: Binding<GenerationParameters> {
         Binding(
-            get: { viewModel.parameters.temperature },
-            set: { viewModel.parameters.temperature = $0 }
-        )
-    }
-
-    private var topPBinding: Binding<Double> {
-        Binding(
-            get: { viewModel.parameters.topP },
-            set: { viewModel.parameters.topP = $0 }
-        )
-    }
-
-    private var maxTokensBinding: Binding<Int> {
-        Binding(
-            get: { viewModel.parameters.maxTokens },
-            set: { viewModel.parameters.maxTokens = $0 }
-        )
-    }
-
-    private var frequencyPenaltyBinding: Binding<Double> {
-        Binding(
-            get: { viewModel.parameters.frequencyPenalty },
-            set: { viewModel.parameters.frequencyPenalty = $0 }
-        )
-    }
-
-    private var presencePenaltyBinding: Binding<Double> {
-        Binding(
-            get: { viewModel.parameters.presencePenalty },
-            set: { viewModel.parameters.presencePenalty = $0 }
-        )
-    }
-
-    private var stopSequencesBinding: Binding<String> {
-        Binding(
-            get: { viewModel.parameters.stopSequences.joined(separator: "\n") },
-            set: { viewModel.parameters.stopSequences = $0.split(separator: "\n").map(String.init) }
+            get: { viewModel.parameters },
+            set: { viewModel.parameters = $0 }
         )
     }
 }

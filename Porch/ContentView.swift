@@ -13,7 +13,7 @@ struct ContentView: View {
     @Query private var settingsRecords: [AppSettings]
     @Query(sort: \ChatThread.updatedAt, order: .reverse) private var chats: [ChatThread]
 
-    @State private var selectedChat: ChatThread?
+    @State private var selectedChatID: UUID?
     @State private var preferredColumn = NavigationSplitViewColumn.sidebar
     @State private var isShowingSettings = false
 
@@ -23,16 +23,19 @@ struct ContentView: View {
                 NavigationSplitView(preferredCompactColumn: $preferredColumn) {
                     ChatListView(
                         chats: chats,
-                        selectedChat: $selectedChat,
+                        selectedChatID: $selectedChatID,
+                        availableModels: settings.availableModels,
                         isReadyForChat: settings.isReadyForChat,
-                        onCreateChat: { createChat(using: settings) },
+                        onCreateChat: { modelID in
+                            createChat(using: settings, modelID: modelID)
+                        },
                         onOpenSettings: { isShowingSettings = true },
                         onRenameChat: renameChat(_:to:),
                         onDeleteChat: deleteChat(_:)
                     )
-                } detail: {
-                    if settings.isReadyForChat {
-                        if let selectedChat {
+                    } detail: {
+                        if settings.isReadyForChat {
+                            if let selectedChat {
                             ChatDetailView(
                                 chat: selectedChat,
                                 settings: settings,
@@ -49,8 +52,8 @@ struct ContentView: View {
                         NavigationStack {
                             SettingsView(settings: settings, mode: .onboarding) {
                                 preferredColumn = .sidebar
-                                if selectedChat == nil {
-                                    selectedChat = chats.first
+                                if selectedChatID == nil {
+                                    selectedChatID = chats.first?.id
                                 }
                             }
                         }
@@ -63,8 +66,8 @@ struct ContentView: View {
                 }
                 .task(id: settings.isReadyForChat) {
                     if settings.isReadyForChat {
-                        if selectedChat == nil {
-                            selectedChat = chats.first
+                        if selectedChatID == nil {
+                            selectedChatID = chats.first?.id
                         }
                         preferredColumn = .sidebar
                     } else {
@@ -78,16 +81,16 @@ struct ContentView: View {
         }
     }
 
-    private func createChat(using settings: AppSettings) {
+    private func createChat(using settings: AppSettings, modelID: String) {
         let chat = ChatThread(
             serverBaseURL: settings.activeBaseURL,
-            modelID: settings.defaultModelID,
+            modelID: modelID,
             systemPrompt: settings.defaultSystemPrompt
         )
         modelContext.insert(chat)
         chat.markUpdated()
         try? modelContext.save()
-        selectedChat = chat
+        selectedChatID = chat.id
         preferredColumn = .detail
     }
 
@@ -100,12 +103,17 @@ struct ContentView: View {
     }
 
     private func deleteChat(_ chat: ChatThread) {
-        let nextSelection = chats.first { $0.id != chat.id }
-        if selectedChat?.id == chat.id {
-            selectedChat = nextSelection
+        let nextSelectionID = chats.first { $0.id != chat.id }?.id
+        if selectedChatID == chat.id {
+            selectedChatID = nextSelectionID
         }
         modelContext.delete(chat)
         try? modelContext.save()
+    }
+
+    private var selectedChat: ChatThread? {
+        guard let selectedChatID else { return nil }
+        return chats.first { $0.id == selectedChatID }
     }
 }
 

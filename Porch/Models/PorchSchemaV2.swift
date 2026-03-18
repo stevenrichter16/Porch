@@ -35,7 +35,6 @@ enum PorchSchemaV2: VersionedSchema {
         var lastValidationMessage: String
         var lastValidatedAt: Date?
         var updatedAt: Date
-        @Transient private var availableModelsCache: [RemoteModel]?
 
         init() {
             self.recordID = Self.singletonID
@@ -53,7 +52,6 @@ enum PorchSchemaV2: VersionedSchema {
             self.lastValidationMessage = ""
             self.lastValidatedAt = nil
             self.updatedAt = .now
-            self.availableModelsCache = nil
         }
 
         var validationState: ConnectionValidationState {
@@ -87,21 +85,13 @@ enum PorchSchemaV2: VersionedSchema {
 
         var availableModels: [RemoteModel] {
             get {
-                if let availableModelsCache {
-                    return availableModelsCache
-                }
-
                 guard let availableModelsData else {
-                    availableModelsCache = []
                     return []
                 }
 
-                let decoded = (try? Self.modelsDecoder.decode([RemoteModel].self, from: availableModelsData)) ?? []
-                availableModelsCache = decoded
-                return decoded
+                return (try? Self.modelsDecoder.decode([RemoteModel].self, from: availableModelsData)) ?? []
             }
             set {
-                availableModelsCache = newValue
                 availableModelsData = try? Self.modelsEncoder.encode(newValue)
             }
         }

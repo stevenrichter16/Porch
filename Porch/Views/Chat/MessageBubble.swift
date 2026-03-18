@@ -9,143 +9,177 @@ struct MessageBubbleModel: Identifiable, Equatable {
     let id: MessageBubbleID
     let role: MessageRole
     let content: String
+    let createdAt: Date?
     let isPartial: Bool
     let finishReason: ChatFinishReason?
     let isStreaming: Bool
     let isRegenerateEnabled: Bool
+    let isEditEnabled: Bool
 
-    init(message: ChatMessage, isRegenerateEnabled: Bool) {
+    init(message: ChatMessage, isRegenerateEnabled: Bool, isEditEnabled: Bool) {
         self.id = .persisted(message.id)
         self.role = message.role
         self.content = message.content
+        self.createdAt = message.createdAt
         self.isPartial = message.isPartial
         self.finishReason = message.finishReason
         self.isStreaming = false
         self.isRegenerateEnabled = isRegenerateEnabled
+        self.isEditEnabled = isEditEnabled
     }
 
     init(
         id: MessageBubbleID,
         role: MessageRole,
         content: String,
+        createdAt: Date?,
         isPartial: Bool,
         finishReason: ChatFinishReason?,
         isStreaming: Bool,
-        isRegenerateEnabled: Bool
+        isRegenerateEnabled: Bool,
+        isEditEnabled: Bool
     ) {
         self.id = id
         self.role = role
         self.content = content
+        self.createdAt = createdAt
         self.isPartial = isPartial
         self.finishReason = finishReason
         self.isStreaming = isStreaming
         self.isRegenerateEnabled = isRegenerateEnabled
+        self.isEditEnabled = isEditEnabled
     }
 }
 
 struct MessageBubble: View, Equatable {
     let model: MessageBubbleModel
     let onRegenerate: () -> Void
+    let onEdit: (UUID) -> Void
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.model == rhs.model
     }
 
     var body: some View {
-        HStack(alignment: .bottom) {
-            if model.role == .user {
-                Spacer(minLength: 48)
+        VStack(alignment: .leading, spacing: 6) {
+            headerRow
+
+            messageContent
+
+            if model.isPartial || model.finishReason == .cancelled {
+                statusCapsule(text: "Partial")
+            } else if let reason = model.finishReason, case .length = reason {
+                statusCapsule(text: "Max tokens reached")
             }
 
-            VStack(alignment: bubbleAlignment, spacing: 6) {
-                bubbleContent
-                    .padding(14)
-                    .frame(maxWidth: 520, alignment: bubbleAlignment == .leading ? .leading : .trailing)
-                    .background(bubbleBackground)
-                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-
-                if model.role == .assistant {
-                    MessageActionRow(
-                        content: model.content,
-                        showRegenerate: model.isRegenerateEnabled && !model.isStreaming,
-                        onRegenerate: onRegenerate
-                    )
-                }
-
-                if model.isPartial || model.finishReason == .cancelled {
-                    statusCapsule(text: "Partial")
-                } else if let reason = model.finishReason, case .length = reason {
-                    statusCapsule(text: "Max tokens reached")
-                }
-            }
-
-            if model.role == .assistant {
-                Spacer(minLength: 48)
+            if shouldShowFooter {
+                footerRow
             }
         }
-        .frame(maxWidth: .infinity)
+        .padding(PorchTheme.messageInternalPadding)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(rowBackground)
+    }
+
+    private var headerRow: some View {
+        HStack(alignment: .center, spacing: 12) {
+            roleLabel
+
+            Spacer(minLength: 0)
+
+            if model.role == .user, model.isEditEnabled, let persistedMessageID {
+                MessageEditButton {
+                    onEdit(persistedMessageID)
+                }
+            }
+
+            MessageCopyButton(content: model.content)
+        }
+    }
+
+    private var roleLabel: some View {
+        Label(
+            model.role == .user ? "You" : "Assistant",
+            systemImage: model.role == .user ? "person.fill" : "cpu"
+        )
+        .font(PorchTheme.roleLabelFont)
+        .foregroundStyle(model.role == .user ? PorchTheme.userRoleLabel : PorchTheme.assistantRoleLabel)
     }
 
     @ViewBuilder
-    private var bubbleContent: some View {
+    private var messageContent: some View {
         switch (model.role, model.isStreaming) {
         case (.assistant, true):
-            Text(model.content)
+            SelectableMessageTextView(content: model.content, kind: .plainText)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .textSelection(.enabled)
-                .foregroundStyle(.primary)
         case (.assistant, false):
             MarkdownMessageView(content: model.content)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .foregroundStyle(.primary)
         default:
-            Text(model.content)
-                .frame(maxWidth: .infinity, alignment: model.role == .user ? .trailing : .leading)
-                .textSelection(.enabled)
-                .foregroundStyle(model.role == .user ? .white : .primary)
+            SelectableMessageTextView(content: model.content, kind: .plainText)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
-    private var bubbleBackground: Color {
+    private var footerRow: some View {
+        HStack(alignment: .center, spacing: 12) {
+            if let createdAt = model.createdAt {
+                Text(MessageTimestampFormatter.string(for: createdAt))
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+
+            Spacer(minLength: 0)
+
+            if model.role == .assistant, model.isRegenerateEnabled, !model.isStreaming {
+                MessageActionRow(
+                    showRegenerate: true,
+                    onRegenerate: onRegenerate
+                )
+            }
+        }
+    }
+
+    private var shouldShowFooter: Bool {
+        model.createdAt != nil || (model.role == .assistant && model.isRegenerateEnabled && !model.isStreaming)
+    }
+
+    private var persistedMessageID: UUID? {
+        guard case .persisted(let messageID) = model.id else {
+            return nil
+        }
+
+        return messageID
+    }
+
+    private var rowBackground: Color {
         switch model.role {
         case .user:
-            Color.blue
+            PorchTheme.userRowBackground
         case .assistant:
-            Color(.secondarySystemBackground)
+            PorchTheme.assistantRowBackground
         case .system:
-            Color.orange.opacity(0.18)
+            Color.orange.opacity(0.08)
         }
-    }
-
-    private var bubbleAlignment: HorizontalAlignment {
-        model.role == .user ? .trailing : .leading
     }
 
     private func statusCapsule(text: String) -> some View {
         Text(text)
-            .font(.caption2.weight(.semibold))
+            .font(PorchTheme.statusCapsuleFont)
             .foregroundStyle(.secondary)
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
-            .background(Color(.tertiarySystemBackground))
+            .background(PorchTheme.inputFieldBackground)
             .clipShape(Capsule())
     }
 }
 
 private struct MessageActionRow: View {
-    let content: String
     let showRegenerate: Bool
     let onRegenerate: () -> Void
 
-    @State private var didCopy = false
-
     var body: some View {
         HStack(spacing: 14) {
-            Button(action: copyMessage) {
-                Label(didCopy ? "Copied" : "Copy", systemImage: didCopy ? "checkmark" : "doc.on.doc")
-            }
-            .buttonStyle(.plain)
-
             if showRegenerate {
                 Button(action: onRegenerate) {
                     Label("Regenerate", systemImage: "arrow.clockwise")
@@ -153,14 +187,52 @@ private struct MessageActionRow: View {
                 .buttonStyle(.plain)
             }
         }
-        .font(.caption)
-        .foregroundStyle(.secondary)
+        .font(.caption2)
+        .foregroundStyle(PorchTheme.actionButtonColor)
+    }
+}
+
+private struct MessageEditButton: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "pencil")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(PorchTheme.actionButtonColor)
+                .frame(width: 28, height: 28)
+                .background(PorchTheme.inputFieldBackground.opacity(0.92), in: Circle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Edit message")
+    }
+}
+
+private struct MessageCopyButton: View {
+    let content: String
+
+    @State private var didCopy = false
+
+    var body: some View {
+        Button(action: copyMessage) {
+            Image(systemName: didCopy ? "checkmark" : "doc.on.doc")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(didCopy ? PorchTheme.accent : PorchTheme.actionButtonColor)
+                .frame(width: 28, height: 28)
+                .background(PorchTheme.inputFieldBackground.opacity(0.92), in: Circle())
+        }
+        .buttonStyle(.plain)
+        .disabled(content.isEmpty)
+        .accessibilityLabel(didCopy ? "Copied" : "Copy message")
     }
 
     private func copyMessage() {
+        guard !content.isEmpty else { return }
+
         #if canImport(UIKit)
         UIPasteboard.general.string = content
         #endif
+
         didCopy = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
             didCopy = false

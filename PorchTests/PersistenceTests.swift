@@ -95,6 +95,22 @@ final class PersistenceTests: XCTestCase {
         XCTAssertEqual(thread.systemPrompt, "Original prompt")
     }
 
+    func testChatThreadCanUseExplicitModelSelectionWithoutMutatingSettingsDefaultModel() {
+        let settings = AppSettings()
+        settings.activeBaseURL = "http://macbook.local:1234/v1"
+        settings.defaultModelID = "default-model"
+        settings.defaultSystemPrompt = "Original prompt"
+
+        let thread = ChatThread(
+            serverBaseURL: settings.activeBaseURL,
+            modelID: "selected-model",
+            systemPrompt: settings.defaultSystemPrompt
+        )
+
+        XCTAssertEqual(thread.modelID, "selected-model")
+        XCTAssertEqual(settings.defaultModelID, "default-model")
+    }
+
     func testChatThreadApplyMessageMutationUpdatesPreview() {
         let thread = ChatThread(serverBaseURL: "http://server.test", modelID: "model", systemPrompt: "")
         let userMessage = ChatMessage(role: .user, content: "Line one\nLine two", thread: thread)
