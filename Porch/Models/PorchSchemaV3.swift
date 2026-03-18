@@ -36,6 +36,7 @@ enum PorchSchemaV3: VersionedSchema {
         var lastValidatedAt: Date?
         var updatedAt: Date
         var isGitHubConnectorEnabled: Bool
+        var isWebSearchConnectorEnabled: Bool
 
         init() {
             self.recordID = Self.singletonID
@@ -54,6 +55,7 @@ enum PorchSchemaV3: VersionedSchema {
             self.lastValidatedAt = nil
             self.updatedAt = .now
             self.isGitHubConnectorEnabled = false
+            self.isWebSearchConnectorEnabled = false
         }
 
         var validationState: ConnectionValidationState {

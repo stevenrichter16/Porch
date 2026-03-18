@@ -20,7 +20,7 @@ final class ChatViewModel: ObservableObject {
     private let client: OpenAICompatibleClient
     private let keychain: KeychainStoreProtocol
     private let apiKeyAccount = "active-server-api-key"
-    private let githubConnector: GitHubConnector
+    private let connectors: [any Connector]
 
     private var streamTask: Task<Void, Never>?
     private var stopRequested = false
@@ -31,14 +31,17 @@ final class ChatViewModel: ObservableObject {
         modelContext: ModelContext,
         client: OpenAICompatibleClient = OpenAICompatibleClient(),
         keychain: KeychainStoreProtocol = KeychainStore(),
-        githubConnector: GitHubConnector = GitHubConnector()
+        connectors: [any Connector]? = nil
     ) {
         self.chat = chat
         self.settings = settings
         self.modelContext = modelContext
         self.client = client
         self.keychain = keychain
-        self.githubConnector = githubConnector
+        self.connectors = connectors ?? [
+            GitHubConnector(keychain: keychain),
+            WebSearchConnector()
+        ]
     }
 
     deinit {
@@ -281,22 +284,41 @@ final class ChatViewModel: ObservableObject {
     }
 
     private func resolveToolDefinitions() -> [ToolDefinition]? {
-        guard settings.isGitHubConnectorEnabled, githubConnector.isConfigured else {
-            return nil
+        var tools: [ToolDefinition] = []
+        for connector in enabledConnectors() {
+            tools.append(contentsOf: connector.toolDefinitions)
         }
-        let tools = githubConnector.toolDefinitions
         return tools.isEmpty ? nil : tools
     }
 
-    private func executeToolCall(_ toolCall: ToolCall) async -> String {
-        do {
-            return try await githubConnector.execute(
-                toolName: toolCall.function.name,
-                arguments: toolCall.function.arguments
-            )
-        } catch {
-            return "{\"error\": \"\(error.localizedDescription)\"}"
+    private func enabledConnectors() -> [any Connector] {
+        connectors.filter { connector in
+            switch connector.id {
+            case "github":
+                return settings.isGitHubConnectorEnabled && connector.isConfigured
+            case "web_search":
+                return settings.isWebSearchConnectorEnabled && connector.isConfigured
+            default:
+                return false
+            }
         }
+    }
+
+    private func executeToolCall(_ toolCall: ToolCall) async -> String {
+        let toolName = toolCall.function.name
+        for connector in enabledConnectors() {
+            if connector.toolDefinitions.contains(where: { $0.function.name == toolName }) {
+                do {
+                    return try await connector.execute(
+                        toolName: toolName,
+                        arguments: toolCall.function.arguments
+                    )
+                } catch {
+                    return "{\"error\": \"\(error.localizedDescription)\"}"
+                }
+            }
+        }
+        return "{\"error\": \"No connector found for tool: \(toolName)\"}"
     }
 
     private func persistAssistantToolCallMessage(content: String?, toolCalls: [ToolCall]) {
@@ -444,7 +466,9 @@ final class ChatViewModel: ObservableObject {
             "github_list_issues": "GitHub Issues",
             "github_get_issue": "GitHub Issue",
             "github_list_pull_requests": "GitHub Pull Requests",
-            "github_get_pull_request": "GitHub Pull Request"
+            "github_get_pull_request": "GitHub Pull Request",
+            "web_search": "Web Search",
+            "web_fetch_page": "Fetching Page"
         ]
         return mapping[name] ?? name
     }

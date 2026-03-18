@@ -92,6 +92,16 @@ struct SettingsView: View {
                         }
                     }
                 }
+
+                Toggle(isOn: Binding(
+                    get: { settings.isWebSearchConnectorEnabled },
+                    set: { newValue in
+                        settings.isWebSearchConnectorEnabled = newValue
+                        settings.markUpdated()
+                    }
+                )) {
+                    Label("Web Search", systemImage: "globe")
+                }
             }
 
             Section("Generation") {
