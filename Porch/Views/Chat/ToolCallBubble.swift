@@ -53,7 +53,8 @@ struct ToolCallBubble: View {
             "github_list_issues": "Listed issues",
             "github_get_issue": "Fetched issue",
             "github_list_pull_requests": "Listed pull requests",
-            "github_get_pull_request": "Fetched pull request"
+            "github_get_pull_request": "Fetched pull request",
+            "github_create_branch_and_commit_changes": "Created branch and pushed changes"
         ]
         if isToolResult {
             return mapping[toolName] ?? "Tool: \(toolName)"
@@ -65,7 +66,8 @@ struct ToolCallBubble: View {
             "github_list_issues": "Listing issues...",
             "github_get_issue": "Fetching issue...",
             "github_list_pull_requests": "Listing pull requests...",
-            "github_get_pull_request": "Fetching pull request..."
+            "github_get_pull_request": "Fetching pull request...",
+            "github_create_branch_and_commit_changes": "Preparing branch and commit..."
         ]
         return callMapping[toolName] ?? "Calling \(toolName)"
     }

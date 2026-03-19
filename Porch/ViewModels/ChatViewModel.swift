@@ -13,6 +13,7 @@ final class ChatViewModel: ObservableObject {
     @Published var isStreaming = false
     @Published var errorMessage: String?
     @Published var infoMessage: String?
+    @Published private(set) var pendingGitHubWriteApproval: PendingGitHubWriteApproval?
 
     private let chat: ChatThread
     private let settings: AppSettings
@@ -24,6 +25,7 @@ final class ChatViewModel: ObservableObject {
 
     private var streamTask: Task<Void, Never>?
     private var stopRequested = false
+    private var pendingGitHubWriteState: PendingGitHubWriteState?
 
     init(
         chat: ChatThread,
@@ -60,7 +62,18 @@ final class ChatViewModel: ObservableObject {
 
     func stopGenerating() {
         stopRequested = true
+        resolvePendingGitHubWriteApproval(with: .stopGeneration)
         streamTask?.cancel()
+    }
+
+    func approvePendingGitHubWrite(branchName: String, commitMessage: String) {
+        resolvePendingGitHubWriteApproval(
+            with: .approve(branchName: branchName, commitMessage: commitMessage)
+        )
+    }
+
+    func cancelPendingGitHubWriteApproval() {
+        resolvePendingGitHubWriteApproval(with: .cancelByUser)
     }
 
     func regenerateLastResponse() {
@@ -189,7 +202,10 @@ final class ChatViewModel: ObservableObject {
                     for toolCall in toolCalls {
                         if stopRequested { return }
                         streamingText = "Calling \(humanReadableToolName(toolCall.function.name))..."
-                        let result = await executeToolCall(toolCall)
+                        guard let result = await executeToolCall(toolCall) else {
+                            streamingText = ""
+                            return
+                        }
                         persistToolResultMessage(toolCall: toolCall, result: result)
                     }
                     streamingText = ""
@@ -281,18 +297,56 @@ final class ChatViewModel: ObservableObject {
     }
 
     private func resolveToolDefinitions() -> [ToolDefinition]? {
-        guard settings.isGitHubConnectorEnabled, githubConnector.isConfigured else {
+        guard
+            settings.isGitHubConnectorEnabled,
+            githubConnector.isConfigured,
+            let githubContext = chat.githubContext
+        else {
             return nil
         }
-        let tools = githubConnector.toolDefinitions
+
+        let tools = githubConnector.toolDefinitions(for: githubContext)
         return tools.isEmpty ? nil : tools
     }
 
-    private func executeToolCall(_ toolCall: ToolCall) async -> String {
+    private func executeToolCall(_ toolCall: ToolCall) async -> String? {
         do {
+            guard let githubContext = chat.githubContext else {
+                return "{\"error\":\"GitHub tools require a selected repository and branch in this chat.\"}"
+            }
+
+            if githubConnector.isWriteTool(toolCall.function.name) {
+                let request = try await githubConnector.prepareWriteRequest(
+                    toolName: toolCall.function.name,
+                    arguments: toolCall.function.arguments,
+                    context: githubContext
+                )
+                switch await waitForGitHubWriteApproval(request: request) {
+                case .approve(let branchName, let commitMessage):
+                    streamingText = "Creating GitHub branch and pushing changes..."
+                    let result = try await githubConnector.executeApprovedWrite(
+                        request,
+                        branchName: branchName,
+                        commitMessage: commitMessage
+                    )
+                    return try encodeToolResult(result)
+
+                case .cancelByUser:
+                    streamingText = ""
+                    return try encodeToolResult(
+                        GitHubWriteCancelledResult(reason: "User declined GitHub write approval.")
+                    )
+
+                case .stopGeneration:
+                    streamingText = ""
+                    return nil
+                }
+            }
+
             return try await githubConnector.execute(
                 toolName: toolCall.function.name,
-                arguments: toolCall.function.arguments
+                arguments: toolCall.function.arguments,
+                context: githubContext
             )
         } catch {
             return "{\"error\": \"\(error.localizedDescription)\"}"
@@ -444,8 +498,49 @@ final class ChatViewModel: ObservableObject {
             "github_list_issues": "GitHub Issues",
             "github_get_issue": "GitHub Issue",
             "github_list_pull_requests": "GitHub Pull Requests",
-            "github_get_pull_request": "GitHub Pull Request"
+            "github_get_pull_request": "GitHub Pull Request",
+            "github_create_branch_and_commit_changes": "GitHub Branch & Push"
         ]
         return mapping[name] ?? name
+    }
+
+    private func encodeToolResult<T: Encodable>(_ result: T) throws -> String {
+        let data = try JSONEncoder().encode(result)
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    private func waitForGitHubWriteApproval(request: GitHubWriteRequest) async -> GitHubWriteApprovalDecision {
+        if stopRequested {
+            return .stopGeneration
+        }
+
+        let approval = PendingGitHubWriteApproval(request: request)
+        pendingGitHubWriteApproval = approval
+        streamingText = "Awaiting approval for GitHub changes..."
+
+        return await withCheckedContinuation { continuation in
+            pendingGitHubWriteState = PendingGitHubWriteState(
+                approvalID: approval.id,
+                continuation: continuation
+            )
+        }
+    }
+
+    private func resolvePendingGitHubWriteApproval(with decision: GitHubWriteApprovalDecision) {
+        guard let pendingState = pendingGitHubWriteState else { return }
+        pendingGitHubWriteState = nil
+        pendingGitHubWriteApproval = nil
+        pendingState.continuation.resume(returning: decision)
+    }
+
+    private struct PendingGitHubWriteState {
+        let approvalID: UUID
+        let continuation: CheckedContinuation<GitHubWriteApprovalDecision, Never>
+    }
+
+    private enum GitHubWriteApprovalDecision {
+        case approve(branchName: String, commitMessage: String)
+        case cancelByUser
+        case stopGeneration
     }
 }

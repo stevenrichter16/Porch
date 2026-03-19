@@ -538,7 +538,379 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertNil(body["stop"])
     }
 
-    private func makeHarness() throws -> Harness {
+    func testGitHubToolsAreNotExposedWithoutChatContext() async throws {
+        let keychain = MemoryKeychainStore()
+        try keychain.save("github-secret", account: "github-pat")
+        let harness = try makeHarness(
+            configureSettings: { $0.isGitHubConnectorEnabled = true },
+            keychain: keychain
+        )
+
+        MockURLProtocol.setRequestHandler { request in
+            guard request.url?.host == "server.test" else {
+                XCTFail("Unexpected request host: \(request.url?.host ?? "nil")")
+                return .data(statusCode: 500)
+            }
+
+            return .stream(bodyChunks: [
+                try self.makeSSEChunk(content: "No GitHub tools were available.", finishReason: nil),
+                try self.makeSSEChunk(content: nil, finishReason: "stop"),
+                Data("data: [DONE]\n".utf8)
+            ])
+        }
+
+        harness.viewModel.composerText = "Inspect the repo"
+        harness.viewModel.sendCurrentInput()
+
+        await waitUntil {
+            !harness.viewModel.isStreaming && harness.chat.sortedMessages.count == 2
+        }
+
+        let request = try XCTUnwrap(MockURLProtocol.capturedRequests.first(where: { $0.url?.host == "server.test" }))
+        let body = try requestBodyJSON(for: request)
+        XCTAssertNil(body["tools"])
+    }
+
+    func testGitHubWriteToolWaitsForApprovalAndStopCancelsWithoutWriting() async throws {
+        let keychain = MemoryKeychainStore()
+        try keychain.save("github-secret", account: "github-pat")
+        let harness = try makeHarness(
+            configureSettings: { $0.isGitHubConnectorEnabled = true },
+            configureChat: {
+                $0.applyGitHubContext(
+                    GitHubChatContext(owner: "octo", repo: "demo", fullName: "octo/demo", branch: "main")
+                )
+            },
+            keychain: keychain
+        )
+
+        MockURLProtocol.setRequestHandler { request in
+            guard let url = request.url else {
+                return .data(statusCode: 500)
+            }
+
+            switch (url.host, request.httpMethod, url.path) {
+            case ("server.test", "POST", "/v1/chat/completions"):
+                return .stream(bodyChunks: try self.makeToolCallSSEChunks(
+                    toolName: "github_create_branch_and_commit_changes",
+                    arguments: self.makeGitHubWriteArguments()
+                ))
+
+            case ("api.github.com", "GET", "/repos/octo/demo"):
+                return .data(body: try self.makeJSONData([
+                    "owner": ["login": "octo"],
+                    "name": "demo",
+                    "full_name": "octo/demo",
+                    "default_branch": "main",
+                    "html_url": "https://github.com/octo/demo",
+                    "private": false
+                ]))
+
+            case ("api.github.com", "GET", "/repos/octo/demo/git/ref/heads/main"):
+                return .data(body: try self.makeJSONData([
+                    "ref": "refs/heads/main",
+                    "object": [
+                        "sha": "base-commit",
+                        "type": "commit"
+                    ]
+                ]))
+
+            case ("api.github.com", "GET", let path) where path.hasPrefix("/repos/octo/demo/git/ref/heads/porch/"):
+                return .data(statusCode: 404, body: Data("{\"message\":\"Not Found\"}".utf8))
+
+            case ("api.github.com", "GET", "/repos/octo/demo/git/commits/base-commit"):
+                return .data(body: try self.makeJSONData([
+                    "sha": "base-commit",
+                    "tree": [
+                        "sha": "base-tree"
+                    ]
+                ]))
+
+            case ("api.github.com", "GET", "/repos/octo/demo/git/trees/base-tree"):
+                return .data(body: try self.makeJSONData([
+                    "sha": "base-tree",
+                    "truncated": false,
+                    "tree": []
+                ]))
+
+            default:
+                XCTFail("Unexpected request: \(request.httpMethod ?? "?") \(url)")
+                return .data(statusCode: 500)
+            }
+        }
+
+        harness.viewModel.composerText = "Create the file"
+        harness.viewModel.sendCurrentInput()
+
+        await waitUntil {
+            harness.viewModel.pendingGitHubWriteApproval != nil
+        }
+
+        let approval = try XCTUnwrap(harness.viewModel.pendingGitHubWriteApproval)
+        XCTAssertEqual(approval.repositoryFullName, "octo/demo")
+        XCTAssertEqual(approval.resolvedBaseRef, "main")
+        XCTAssertEqual(approval.changes.count, 1)
+        XCTAssertEqual(approval.changes.first?.path, "Sources/NewFile.swift")
+        XCTAssertEqual(harness.viewModel.streamingText, "Awaiting approval for GitHub changes...")
+
+        let githubWriteRequestsBeforeStop = MockURLProtocol.capturedRequests.filter {
+            $0.url?.host == "api.github.com" && $0.httpMethod == "POST"
+        }
+        XCTAssertTrue(githubWriteRequestsBeforeStop.isEmpty)
+
+        harness.viewModel.stopGenerating()
+
+        await waitUntil {
+            !harness.viewModel.isStreaming && harness.viewModel.pendingGitHubWriteApproval == nil
+        }
+
+        XCTAssertEqual(harness.chat.sortedMessages.map(\.role), [.user, .assistant])
+        XCTAssertTrue(harness.chat.sortedMessages.filter { $0.role == .tool }.isEmpty)
+    }
+
+    func testGitHubWriteApprovalCancelPersistsCancelledToolResultAndContinuesConversation() async throws {
+        let keychain = MemoryKeychainStore()
+        try keychain.save("github-secret", account: "github-pat")
+        let harness = try makeHarness(
+            configureSettings: { $0.isGitHubConnectorEnabled = true },
+            configureChat: {
+                $0.applyGitHubContext(
+                    GitHubChatContext(owner: "octo", repo: "demo", fullName: "octo/demo", branch: "main")
+                )
+            },
+            keychain: keychain
+        )
+        let localRequestCounter = LockedCounter()
+
+        MockURLProtocol.setRequestHandler { request in
+            guard let url = request.url else {
+                return .data(statusCode: 500)
+            }
+
+            switch (url.host, request.httpMethod, url.path) {
+            case ("server.test", "POST", "/v1/chat/completions"):
+                if localRequestCounter.next() == 0 {
+                    return .stream(bodyChunks: try self.makeToolCallSSEChunks(
+                        toolName: "github_create_branch_and_commit_changes",
+                        arguments: self.makeGitHubWriteArguments()
+                    ))
+                }
+                return .stream(bodyChunks: [
+                    try self.makeSSEChunk(content: "Understood. I did not push the GitHub changes.", finishReason: nil),
+                    try self.makeSSEChunk(content: nil, finishReason: "stop"),
+                    Data("data: [DONE]\n".utf8)
+                ])
+
+            case ("api.github.com", "GET", "/repos/octo/demo"):
+                return .data(body: try self.makeJSONData([
+                    "owner": ["login": "octo"],
+                    "name": "demo",
+                    "full_name": "octo/demo",
+                    "default_branch": "main",
+                    "html_url": "https://github.com/octo/demo",
+                    "private": false
+                ]))
+
+            case ("api.github.com", "GET", "/repos/octo/demo/git/ref/heads/main"):
+                return .data(body: try self.makeJSONData([
+                    "ref": "refs/heads/main",
+                    "object": [
+                        "sha": "base-commit",
+                        "type": "commit"
+                    ]
+                ]))
+
+            case ("api.github.com", "GET", let path) where path.hasPrefix("/repos/octo/demo/git/ref/heads/porch/"):
+                return .data(statusCode: 404, body: Data("{\"message\":\"Not Found\"}".utf8))
+
+            case ("api.github.com", "GET", "/repos/octo/demo/git/commits/base-commit"):
+                return .data(body: try self.makeJSONData([
+                    "sha": "base-commit",
+                    "tree": [
+                        "sha": "base-tree"
+                    ]
+                ]))
+
+            case ("api.github.com", "GET", "/repos/octo/demo/git/trees/base-tree"):
+                return .data(body: try self.makeJSONData([
+                    "sha": "base-tree",
+                    "truncated": false,
+                    "tree": []
+                ]))
+
+            default:
+                XCTFail("Unexpected request: \(request.httpMethod ?? "?") \(url)")
+                return .data(statusCode: 500)
+            }
+        }
+
+        harness.viewModel.composerText = "Prepare the branch"
+        harness.viewModel.sendCurrentInput()
+
+        await waitUntil {
+            harness.viewModel.pendingGitHubWriteApproval != nil
+        }
+
+        harness.viewModel.cancelPendingGitHubWriteApproval()
+
+        await waitUntil {
+            !harness.viewModel.isStreaming && harness.chat.sortedMessages.count == 4
+        }
+
+        let roles = harness.chat.sortedMessages.map(\.role)
+        XCTAssertEqual(roles, [.user, .assistant, .tool, .assistant])
+        XCTAssertTrue(harness.chat.sortedMessages[2].content.contains("\"status\":\"cancelled\""))
+        XCTAssertTrue(harness.chat.sortedMessages[3].content.contains("did not push"))
+        XCTAssertTrue(
+            MockURLProtocol.capturedRequests.filter {
+                $0.url?.host == "api.github.com" && $0.httpMethod == "POST"
+            }.isEmpty
+        )
+    }
+
+    func testGitHubWriteApprovalApproveExecutesWriteAndContinuesConversation() async throws {
+        let keychain = MemoryKeychainStore()
+        try keychain.save("github-secret", account: "github-pat")
+        let harness = try makeHarness(
+            configureSettings: { $0.isGitHubConnectorEnabled = true },
+            configureChat: {
+                $0.applyGitHubContext(
+                    GitHubChatContext(owner: "octo", repo: "demo", fullName: "octo/demo", branch: "main")
+                )
+            },
+            keychain: keychain
+        )
+        let localRequestCounter = LockedCounter()
+
+        MockURLProtocol.setRequestHandler { request in
+            guard let url = request.url else {
+                return .data(statusCode: 500)
+            }
+
+            switch (url.host, request.httpMethod, url.path) {
+            case ("server.test", "POST", "/v1/chat/completions"):
+                if localRequestCounter.next() == 0 {
+                    return .stream(bodyChunks: try self.makeToolCallSSEChunks(
+                        toolName: "github_create_branch_and_commit_changes",
+                        arguments: self.makeGitHubWriteArguments()
+                    ))
+                }
+                return .stream(bodyChunks: [
+                    try self.makeSSEChunk(content: "The branch is ready on GitHub.", finishReason: nil),
+                    try self.makeSSEChunk(content: nil, finishReason: "stop"),
+                    Data("data: [DONE]\n".utf8)
+                ])
+
+            case ("api.github.com", "GET", "/repos/octo/demo"):
+                return .data(body: try self.makeJSONData([
+                    "owner": ["login": "octo"],
+                    "name": "demo",
+                    "full_name": "octo/demo",
+                    "default_branch": "main",
+                    "html_url": "https://github.com/octo/demo",
+                    "private": false
+                ]))
+
+            case ("api.github.com", "GET", "/repos/octo/demo/git/ref/heads/main"):
+                return .data(body: try self.makeJSONData([
+                    "ref": "refs/heads/main",
+                    "object": [
+                        "sha": "base-commit",
+                        "type": "commit"
+                    ]
+                ]))
+
+            case ("api.github.com", "GET", let path) where
+                path.hasPrefix("/repos/octo/demo/git/ref/heads/porch/") ||
+                path == "/repos/octo/demo/git/ref/heads/codex/approved-branch":
+                return .data(statusCode: 404, body: Data("{\"message\":\"Not Found\"}".utf8))
+
+            case ("api.github.com", "GET", "/repos/octo/demo/git/commits/base-commit"):
+                return .data(body: try self.makeJSONData([
+                    "sha": "base-commit",
+                    "tree": [
+                        "sha": "base-tree"
+                    ]
+                ]))
+
+            case ("api.github.com", "GET", "/repos/octo/demo/git/trees/base-tree"):
+                return .data(body: try self.makeJSONData([
+                    "sha": "base-tree",
+                    "truncated": false,
+                    "tree": []
+                ]))
+
+            case ("api.github.com", "POST", "/repos/octo/demo/git/blobs"):
+                return .data(body: try self.makeJSONData([
+                    "sha": "blob-1"
+                ]))
+
+            case ("api.github.com", "POST", "/repos/octo/demo/git/trees"):
+                return .data(body: try self.makeJSONData([
+                    "sha": "tree-2"
+                ]))
+
+            case ("api.github.com", "POST", "/repos/octo/demo/git/commits"):
+                return .data(body: try self.makeJSONData([
+                    "sha": "commit-2",
+                    "html_url": "https://github.com/octo/demo/commit/commit-2"
+                ]))
+
+            case ("api.github.com", "POST", "/repos/octo/demo/git/refs"):
+                return .data(body: try self.makeJSONData([
+                    "ref": "refs/heads/codex/approved-branch",
+                    "object": [
+                        "sha": "commit-2",
+                        "type": "commit"
+                    ]
+                ]))
+
+            default:
+                XCTFail("Unexpected request: \(request.httpMethod ?? "?") \(url)")
+                return .data(statusCode: 500)
+            }
+        }
+
+        harness.viewModel.composerText = "Prepare the approved branch"
+        harness.viewModel.sendCurrentInput()
+
+        await waitUntil {
+            harness.viewModel.pendingGitHubWriteApproval != nil
+        }
+
+        harness.viewModel.approvePendingGitHubWrite(
+            branchName: "codex/approved-branch",
+            commitMessage: "Apply the approved GitHub change"
+        )
+
+        await waitUntil {
+            !harness.viewModel.isStreaming && harness.chat.sortedMessages.count == 4
+        }
+
+        let toolMessage = try XCTUnwrap(harness.chat.sortedMessages.first(where: { $0.role == .tool }))
+        XCTAssertTrue(toolMessage.content.contains("\"status\":\"success\""))
+        XCTAssertTrue(toolMessage.content.contains("\"branch_name\":\"codex\\/approved-branch\""))
+        XCTAssertEqual(harness.chat.sortedMessages.last?.content, "The branch is ready on GitHub.")
+
+        let commitRequest = try XCTUnwrap(
+            MockURLProtocol.capturedRequests.first(where: { $0.url?.path == "/repos/octo/demo/git/commits" })
+        )
+        let commitBody = try requestBodyJSON(for: commitRequest)
+        XCTAssertEqual(commitBody["message"] as? String, "Apply the approved GitHub change")
+
+        let refRequest = try XCTUnwrap(
+            MockURLProtocol.capturedRequests.first(where: { $0.url?.path == "/repos/octo/demo/git/refs" })
+        )
+        let refBody = try requestBodyJSON(for: refRequest)
+        XCTAssertEqual(refBody["ref"] as? String, "refs/heads/codex/approved-branch")
+    }
+
+    private func makeHarness(
+        configureSettings: ((AppSettings) -> Void)? = nil,
+        configureChat: ((ChatThread) -> Void)? = nil,
+        keychain: MemoryKeychainStore? = nil,
+        githubConnector: GitHubConnector? = nil
+    ) throws -> Harness {
         let container = try TestModelContainerFactory.makeContainer()
         let context = ModelContext(container)
 
@@ -548,6 +920,7 @@ final class ChatViewModelTests: XCTestCase {
         settings.defaultSystemPrompt = "You are helpful."
         settings.availableModels = [RemoteModel(id: "llama-3", ownedBy: "local")]
         settings.validationState = .valid
+        configureSettings?(settings)
         context.insert(settings)
 
         let chat = ChatThread(
@@ -555,10 +928,11 @@ final class ChatViewModelTests: XCTestCase {
             modelID: settings.defaultModelID,
             systemPrompt: settings.defaultSystemPrompt
         )
+        configureChat?(chat)
         context.insert(chat)
         try context.save()
 
-        let keychain = MemoryKeychainStore()
+        let keychain = keychain ?? MemoryKeychainStore()
         try keychain.save("secret", account: "active-server-api-key")
 
         let client = OpenAICompatibleClient(session: TestSessionFactory.makeSession())
@@ -567,7 +941,8 @@ final class ChatViewModelTests: XCTestCase {
             settings: settings,
             modelContext: context,
             client: client,
-            keychain: keychain
+            keychain: keychain,
+            githubConnector: githubConnector ?? GitHubConnector(keychain: keychain, session: TestSessionFactory.makeSession())
         )
 
         return Harness(
@@ -605,6 +980,61 @@ final class ChatViewModelTests: XCTestCase {
         return line
     }
 
+    private func makeToolCallSSEChunks(toolName: String, arguments: String) throws -> [Data] {
+        let toolCallPayload = try makeJSONData([
+            "choices": [
+                [
+                    "index": 0,
+                    "delta": [
+                        "tool_calls": [
+                            [
+                                "index": 0,
+                                "id": "call_1",
+                                "type": "function",
+                                "function": [
+                                    "name": toolName,
+                                    "arguments": arguments
+                                ]
+                            ]
+                        ]
+                    ],
+                    "finish_reason": NSNull()
+                ]
+            ]
+        ])
+        let finishPayload = try makeJSONData([
+            "choices": [
+                [
+                    "index": 0,
+                    "delta": [:],
+                    "finish_reason": "tool_calls"
+                ]
+            ]
+        ])
+        return [
+            makeSSELine(toolCallPayload),
+            makeSSELine(finishPayload),
+            Data("data: [DONE]\n".utf8)
+        ]
+    }
+
+    private func makeSSELine(_ payload: Data) -> Data {
+        var line = Data("data: ".utf8)
+        line.append(payload)
+        line.append(Data("\n".utf8))
+        return line
+    }
+
+    private func makeGitHubWriteArguments() -> String {
+        """
+        {"owner":"octo","repo":"demo","commit_message":"Add the generated file","changes":[{"path":"Sources/NewFile.swift","operation":"create","content":"print(\\"Hello from Porch\\")\\n"}]}
+        """
+    }
+
+    private func makeJSONData(_ object: Any) throws -> Data {
+        try JSONSerialization.data(withJSONObject: object)
+    }
+
     private func waitUntil(
         timeout: TimeInterval = 2,
         pollIntervalNanoseconds: UInt64 = 20_000_000,
@@ -638,5 +1068,18 @@ final class ChatViewModelTests: XCTestCase {
         let chat: ChatThread
         let keychain: MemoryKeychainStore
         let viewModel: ChatViewModel
+    }
+}
+
+private final class LockedCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+
+    func next() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        let current = value
+        value += 1
+        return current
     }
 }

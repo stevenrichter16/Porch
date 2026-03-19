@@ -6,15 +6,18 @@ struct ChatDetailView: View {
     @Environment(\.modelContext) private var modelContext
 
     @Bindable private var chat: ChatThread
+    @Bindable private var settings: AppSettings
     @Query private var messages: [ChatMessage]
     @StateObject private var viewModel: ChatViewModel
     @State private var scrollPosition = ScrollPosition(idType: MessageBubbleID.self)
     @State private var isNearBottom = true
     @State private var editingDraft: MessageEditDraft?
+    @State private var isShowingGitHubContextSheet = false
 
     init(chat: ChatThread, settings: AppSettings, modelContext: ModelContext) {
         let chatID = chat.id
         self._chat = Bindable(chat)
+        self._settings = Bindable(settings)
         self._messages = Query(
             filter: #Predicate<ChatMessage> { message in
                 message.thread?.id == chatID
@@ -74,6 +77,72 @@ struct ChatDetailView: View {
                 }
                 .frame(maxWidth: 220)
             }
+
+            if settings.isGitHubConnectorEnabled {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        isShowingGitHubContextSheet = true
+                    } label: {
+                        Label {
+                            Text(chat.githubContext?.repo ?? "Select Repo")
+                                .font(.caption.weight(.semibold))
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        } icon: {
+                            Image(systemName: "point.3.connected.trianglepath.dotted")
+                                .font(.caption.weight(.semibold))
+                        }
+                        .foregroundStyle(chat.githubContext == nil ? .secondary : .primary)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(viewModel.isStreaming || viewModel.pendingGitHubWriteApproval != nil)
+                    .accessibilityLabel(
+                        chat.githubContext == nil
+                            ? "Select GitHub repository and branch"
+                            : "Change GitHub repository and branch"
+                    )
+                    .accessibilityValue(
+                        chat.githubContext.map { "\($0.repositoryLabel), branch \($0.branch)" } ?? "No repository selected"
+                    )
+                }
+            }
+        }
+        .sheet(
+            item: Binding(
+                get: { viewModel.pendingGitHubWriteApproval },
+                set: { newValue in
+                    guard newValue == nil, viewModel.pendingGitHubWriteApproval != nil else { return }
+                    viewModel.cancelPendingGitHubWriteApproval()
+                }
+            )
+        ) { approval in
+            NavigationStack {
+                GitHubWriteApprovalSheet(approval: approval) { branchName, commitMessage in
+                    viewModel.approvePendingGitHubWrite(branchName: branchName, commitMessage: commitMessage)
+                } onCancel: {
+                    viewModel.cancelPendingGitHubWriteApproval()
+                }
+            }
+            .interactiveDismissDisabled()
+            .presentationDetents([.medium, .large])
+        }
+        .sheet(isPresented: $isShowingGitHubContextSheet) {
+            NavigationStack {
+                GitHubContextSelectionSheet(
+                    initialContext: chat.githubContext
+                ) { context in
+                    chat.applyGitHubContext(context)
+                    try? modelContext.save()
+                    isShowingGitHubContextSheet = false
+                } onClear: {
+                    chat.applyGitHubContext(nil)
+                    try? modelContext.save()
+                    isShowingGitHubContextSheet = false
+                } onCancel: {
+                    isShowingGitHubContextSheet = false
+                }
+            }
+            .presentationDetents([.medium, .large])
         }
     }
 
@@ -168,6 +237,10 @@ struct ChatDetailView: View {
 
     private var messageStack: some View {
         LazyVStack(alignment: .leading, spacing: PorchTheme.messageVerticalSpacing) {
+            if settings.isGitHubConnectorEnabled, chat.githubContext == nil {
+                gitHubContextHint
+            }
+
             ForEach(persistedBubbleModels) { bubble in
                 MessageBubble(
                     model: bubble,
@@ -201,6 +274,26 @@ struct ChatDetailView: View {
             }
             .presentationDetents([.medium, .large])
         }
+    }
+
+    private var gitHubContextHint: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label("Select a GitHub repo to enable repo-aware tools in this chat.", systemImage: "shippingbox")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(.primary)
+
+            Button("Select Repository") {
+                isShowingGitHubContextSheet = true
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(PorchTheme.accent)
+            .disabled(viewModel.isStreaming || viewModel.pendingGitHubWriteApproval != nil)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(16)
+        .background(PorchTheme.inputFieldBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .padding(.horizontal, 18)
     }
 
     private func scrollToBottom(animation: Animation? = nil) {

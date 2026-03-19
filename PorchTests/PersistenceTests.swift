@@ -45,7 +45,7 @@ final class PersistenceTests: XCTestCase {
             try context.save()
         }
 
-        let schema = Schema(versionedSchema: PorchSchemaV2.self)
+        let schema = Schema(versionedSchema: PorchSchemaV4.self)
         let configuration = ModelConfiguration(schema: schema, url: storeURL)
         let container = try ModelContainer(
             for: schema,
@@ -67,6 +67,107 @@ final class PersistenceTests: XCTestCase {
         let updatedCount = try ChatThreadMetadataBackfill.populateMissingLastMessagePreviews(in: context)
         XCTAssertEqual(updatedCount, 1)
         XCTAssertEqual(migratedThread.lastMessagePreview, "Latest reply")
+    }
+
+    func testMigrationFromV2StoreLoadsExistingSettingsAndChatsInLatestSchema() throws {
+        let storeDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let storeURL = storeDirectory.appendingPathComponent("Porch.store")
+        try FileManager.default.createDirectory(at: storeDirectory, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: storeDirectory)
+        }
+
+        do {
+            let schema = Schema(versionedSchema: PorchSchemaV2.self)
+            let configuration = ModelConfiguration(schema: schema, url: storeURL)
+            let container = try ModelContainer(for: schema, configurations: [configuration])
+            let context = ModelContext(container)
+
+            let settings = PorchSchemaV2.AppSettings()
+            settings.activeBaseURL = "http://server.test"
+            settings.defaultModelID = "model"
+            settings.validationState = .valid
+            context.insert(settings)
+
+            let thread = PorchSchemaV2.ChatThread(
+                serverBaseURL: "http://server.test",
+                modelID: "model",
+                systemPrompt: ""
+            )
+            context.insert(thread)
+            context.insert(
+                PorchSchemaV2.ChatMessage(
+                    role: .assistant,
+                    content: "Latest reply",
+                    thread: thread,
+                    createdAt: Date(timeIntervalSince1970: 20)
+                )
+            )
+            try context.save()
+        }
+
+        let schema = Schema(versionedSchema: PorchSchemaV4.self)
+        let configuration = ModelConfiguration(schema: schema, url: storeURL)
+        let container = try ModelContainer(
+            for: schema,
+            migrationPlan: PorchMigrationPlan.self,
+            configurations: [configuration]
+        )
+        let context = ModelContext(container)
+        let settings = try XCTUnwrap(context.fetch(FetchDescriptor<AppSettings>()).first)
+        let thread = try XCTUnwrap(context.fetch(FetchDescriptor<ChatThread>()).first)
+        let messages = try ChatMessageQueries.fetchSortedMessages(for: thread, in: context)
+
+        XCTAssertFalse(settings.isGitHubConnectorEnabled)
+        XCTAssertEqual(thread.modelID, "model")
+        XCTAssertEqual(messages.map(\.content), ["Latest reply"])
+        XCTAssertNil(thread.githubContext)
+    }
+
+    func testMigrationFromV3StoreInitializesEmptyGitHubContextInV4() throws {
+        let storeDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let storeURL = storeDirectory.appendingPathComponent("Porch.store")
+        try FileManager.default.createDirectory(at: storeDirectory, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: storeDirectory)
+        }
+
+        do {
+            let schema = Schema(versionedSchema: PorchSchemaV3.self)
+            let configuration = ModelConfiguration(schema: schema, url: storeURL)
+            let container = try ModelContainer(for: schema, configurations: [configuration])
+            let context = ModelContext(container)
+
+            let settings = PorchSchemaV3.AppSettings()
+            settings.isGitHubConnectorEnabled = true
+            context.insert(settings)
+
+            let thread = PorchSchemaV3.ChatThread(
+                serverBaseURL: "http://server.test",
+                modelID: "model",
+                systemPrompt: ""
+            )
+            context.insert(thread)
+            try context.save()
+        }
+
+        let schema = Schema(versionedSchema: PorchSchemaV4.self)
+        let configuration = ModelConfiguration(schema: schema, url: storeURL)
+        let container = try ModelContainer(
+            for: schema,
+            migrationPlan: PorchMigrationPlan.self,
+            configurations: [configuration]
+        )
+        let context = ModelContext(container)
+        let thread = try XCTUnwrap(context.fetch(FetchDescriptor<ChatThread>()).first)
+
+        XCTAssertNil(thread.githubContext)
+        XCTAssertNil(thread.githubRepoOwner)
+        XCTAssertNil(thread.githubRepoName)
+        XCTAssertNil(thread.githubRepoFullName)
+        XCTAssertNil(thread.githubBranchName)
     }
 
     func testNewThreadStartsWithEmptyLastMessagePreview() {
@@ -109,6 +210,61 @@ final class PersistenceTests: XCTestCase {
 
         XCTAssertEqual(thread.modelID, "selected-model")
         XCTAssertEqual(settings.defaultModelID, "default-model")
+    }
+
+    func testChatThreadGitHubContextRoundTripsAcrossSaveAndReload() throws {
+        let storeDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let storeURL = storeDirectory.appendingPathComponent("Porch.store")
+        try FileManager.default.createDirectory(at: storeDirectory, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: storeDirectory)
+        }
+
+        let schema = Schema(versionedSchema: PorchSchemaV4.self)
+        let configuration = ModelConfiguration(schema: schema, url: storeURL)
+
+        do {
+            let container = try ModelContainer(
+                for: schema,
+                migrationPlan: PorchMigrationPlan.self,
+                configurations: [configuration]
+            )
+            let context = ModelContext(container)
+            let thread = ChatThread(
+                serverBaseURL: "http://server.test",
+                modelID: "model",
+                systemPrompt: ""
+            )
+            thread.applyGitHubContext(
+                GitHubChatContext(
+                    owner: "octo",
+                    repo: "demo",
+                    fullName: "octo/demo",
+                    branch: "feature/context"
+                )
+            )
+            context.insert(thread)
+            try context.save()
+        }
+
+        let reloadedContainer = try ModelContainer(
+            for: schema,
+            migrationPlan: PorchMigrationPlan.self,
+            configurations: [configuration]
+        )
+        let reloadedContext = ModelContext(reloadedContainer)
+        let thread = try XCTUnwrap(reloadedContext.fetch(FetchDescriptor<ChatThread>()).first)
+
+        XCTAssertEqual(
+            thread.githubContext,
+            GitHubChatContext(
+                owner: "octo",
+                repo: "demo",
+                fullName: "octo/demo",
+                branch: "feature/context"
+            )
+        )
     }
 
     func testChatThreadApplyMessageMutationUpdatesPreview() {

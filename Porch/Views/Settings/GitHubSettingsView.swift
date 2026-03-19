@@ -20,7 +20,7 @@ struct GitHubSettingsView: View {
     var body: some View {
         Form {
             Section {
-                Text("Connect your GitHub account to let the AI search repositories, read files, and browse issues and pull requests.")
+                Text("Connect your GitHub account to let the AI search repositories, read files, browse issues and pull requests, and prepare branch-and-commit changes that still require your approval before anything is written.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
@@ -33,7 +33,7 @@ struct GitHubSettingsView: View {
                         saveToken(newValue)
                     }
 
-                Text("Create a token at GitHub Settings > Developer settings > Personal access tokens. Grant 'repo' scope for private repos, or use a fine-grained token with read-only access.")
+                Text("Create a token at GitHub Settings > Developer settings > Personal access tokens. For private repos, classic 'repo' scope works. For fine-grained tokens, grant repository contents write access if you want Porch to create branches and push approved commits.")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
             }

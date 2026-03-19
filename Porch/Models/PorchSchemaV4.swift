@@ -1,9 +1,9 @@
 import Foundation
 import SwiftData
 
-enum PorchSchemaV3: VersionedSchema {
+enum PorchSchemaV4: VersionedSchema {
     static var versionIdentifier: Schema.Version {
-        .init(3, 0, 0)
+        .init(4, 0, 0)
     }
 
     static var models: [any PersistentModel.Type] {
@@ -119,6 +119,10 @@ enum PorchSchemaV3: VersionedSchema {
         var serverBaseURL: String
         var modelID: String
         var systemPrompt: String
+        var githubRepoOwner: String?
+        var githubRepoName: String?
+        var githubRepoFullName: String?
+        var githubBranchName: String?
 
         @Relationship(deleteRule: .cascade, inverse: \ChatMessage.thread)
         var messages: [ChatMessage]
@@ -137,6 +141,10 @@ enum PorchSchemaV3: VersionedSchema {
             self.serverBaseURL = serverBaseURL
             self.modelID = modelID
             self.systemPrompt = systemPrompt
+            self.githubRepoOwner = nil
+            self.githubRepoName = nil
+            self.githubRepoFullName = nil
+            self.githubBranchName = nil
             self.messages = []
         }
 
@@ -156,6 +164,24 @@ enum PorchSchemaV3: VersionedSchema {
             title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || title == "New Chat"
         }
 
+        var githubContext: GitHubChatContext? {
+            guard
+                let githubRepoOwner,
+                let githubRepoName,
+                let githubRepoFullName,
+                let githubBranchName
+            else {
+                return nil
+            }
+
+            return GitHubChatContext(
+                owner: githubRepoOwner,
+                repo: githubRepoName,
+                fullName: githubRepoFullName,
+                branch: githubBranchName
+            )
+        }
+
         func markUpdated() {
             updatedAt = .now
         }
@@ -173,6 +199,14 @@ enum PorchSchemaV3: VersionedSchema {
 
             lastMessagePreview = latestMessage?.previewText ?? ""
             return !lastMessagePreview.isEmpty
+        }
+
+        func applyGitHubContext(_ context: GitHubChatContext?) {
+            githubRepoOwner = context?.owner
+            githubRepoName = context?.repo
+            githubRepoFullName = context?.fullName
+            githubBranchName = context?.branch
+            markUpdated()
         }
     }
 
@@ -240,20 +274,13 @@ enum PorchSchemaV3: VersionedSchema {
         }
 
         var previewText: String {
-            if role == .tool {
-                return "Tool: \(toolCallName ?? "unknown")"
+            let normalized = content
+                .replacingOccurrences(of: "\n", with: " ")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if normalized.count <= 120 {
+                return normalized
             }
-
-            let collapsedWhitespace = content
-                .components(separatedBy: .whitespacesAndNewlines)
-                .filter { !$0.isEmpty }
-                .joined(separator: " ")
-
-            guard collapsedWhitespace.count > 160 else {
-                return collapsedWhitespace
-            }
-
-            return String(collapsedWhitespace.prefix(157)) + "..."
+            return String(normalized.prefix(117)) + "..."
         }
     }
 }
