@@ -1,19 +1,26 @@
 import Foundation
 
-enum ChatTitleGenerator {
-    static func title(for message: String) -> String {
+/// Generates a concise title for a chat from its first message.
+///
+/// The implementation normalises whitespace, trims surrounding
+/// spaces, and limits the result to 48 characters. When longer,
+/// it truncates at 45 characters and appends an ellipsis.
+public enum ChatTitleGenerator {
+    public static func title(for message: String) -> String {
+        // Collapse any consecutive whitespace (including newlines) into a single space.
         let collapsed = message
-            .split(whereSeparator: \.isNewline)
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
             .joined(separator: " ")
-            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
 
-        guard !collapsed.isEmpty else { return "New Chat" }
-        if collapsed.count <= 48 {
-            return collapsed
-        }
+        let trimmed = collapsed.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "New Chat" }
 
-        let endIndex = collapsed.index(collapsed.startIndex, offsetBy: 45)
-        return "\(collapsed[..<endIndex])..."
+        // If the title fits within 48 characters, use it verbatim.
+        if trimmed.count <= 48 { return trimmed }
+
+        // Truncate to 45 characters and append "...".
+        let prefix = trimmed.prefix(45)
+        return "\(prefix)..."
     }
 }
