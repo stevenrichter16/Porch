@@ -1,3 +1,4 @@
+/* This file defines the ChatMessage type and query helpers for SwiftData. */
 import Foundation
 import SwiftData
 
