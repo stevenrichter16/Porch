@@ -1,9 +1,4 @@
-//
-//  PorchApp.swift
-//  Porch
-//
-//  Created by Steven Richter on 3/16/26.
-//
+// This file defines the main application entry point for Porch.
 
 import SwiftUI
 import SwiftData
