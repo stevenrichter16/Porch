@@ -68,7 +68,7 @@ final class GitHubConnectorTests: XCTestCase {
         }
 
         let request = try await connector.prepareWriteRequest(
-            toolName: "github_create_branch_and_commit_changes",
+            toolName: "github_commit_file_changes",
             arguments: writeArgumentsJSON()
         )
 
@@ -114,7 +114,7 @@ final class GitHubConnectorTests: XCTestCase {
         XCTAssertNotNil(treePropertyMap["entry_type"])
         XCTAssertNotNil(treePropertyMap["max_entries"])
 
-        let writeTool = try XCTUnwrap(tools.first(where: { $0.function.name == "github_create_branch_and_commit_changes" }))
+        let writeTool = try XCTUnwrap(tools.first(where: { $0.function.name == "github_commit_file_changes" }))
         let writeJSON = try definitionJSON(for: writeTool)
         let writeFunctionJSON = try XCTUnwrap(writeJSON["function"] as? [String: Any])
         let writeParameters = try XCTUnwrap(writeFunctionJSON["parameters"] as? [String: Any])
@@ -392,7 +392,7 @@ final class GitHubConnectorTests: XCTestCase {
         }
 
         let request = try await connector.prepareWriteRequest(
-            toolName: "github_create_branch_and_commit_changes",
+            toolName: "github_commit_file_changes",
             arguments: #"{"commit_message":"Add the generated file","changes":[{"path":"Sources/NewFile.swift","operation":"create","content":"print(\"Hello from Porch\")\n"}]}"#,
             context: context
         )
@@ -411,7 +411,7 @@ final class GitHubConnectorTests: XCTestCase {
 
         do {
             _ = try await connector.prepareWriteRequest(
-                toolName: "github_create_branch_and_commit_changes",
+                toolName: "github_commit_file_changes",
                 arguments: #"{"commit_message":"Add tests","path":"PorchTests/WebSearchConnectorTests.swift","changes":[{"path":"PorchTests/WebSearchConnectorTests.swift","operation":"create","content":"import XCTest\n"}]}"#,
                 context: context
             )
@@ -433,7 +433,7 @@ final class GitHubConnectorTests: XCTestCase {
 
         do {
             _ = try await connector.prepareWriteRequest(
-                toolName: "github_create_branch_and_commit_changes",
+                toolName: "github_commit_file_changes",
                 arguments: #"{"owner":"octo","repo":"demo","base_ref":"main","commit_message":"Add tests","changes":[{"path":"PorchTests/WebSearchConnectorTests.swift","operation":"create","content":"import XCTest\n"}]}"#,
                 context: context
             )
@@ -455,7 +455,7 @@ final class GitHubConnectorTests: XCTestCase {
 
         do {
             _ = try await connector.prepareWriteRequest(
-                toolName: "github_create_branch_and_commit_changes",
+                toolName: "github_commit_file_changes",
                 arguments: #"{"commit_message":"Add tests","changes":{"path":"PorchTests/WebSearchConnectorTests.swift","operation":"create","content":"import XCTest\n"}}"#,
                 context: context
             )
@@ -476,7 +476,7 @@ final class GitHubConnectorTests: XCTestCase {
 
         do {
             _ = try await connector.prepareWriteRequest(
-                toolName: "github_create_branch_and_commit_changes",
+                toolName: "github_commit_file_changes",
                 arguments: #"{"commit_message":"Add tests","changes":[{"path":"PorchTests/WebSearchConnectorTests.swift","operation":"replace","content":"import XCTest\n"}]}"#,
                 context: context
             )
@@ -497,7 +497,7 @@ final class GitHubConnectorTests: XCTestCase {
 
         do {
             _ = try await connector.prepareWriteRequest(
-                toolName: "github_create_branch_and_commit_changes",
+                toolName: "github_commit_file_changes",
                 arguments: "{\"commit_message\":\"Add tests\",\"changes\":[{\"path\":\"PorchTests/WebSearchConnectorTests.swift\",\"operation\":\"create\",\"content\":\"import XCTest\n\"}]}",
                 context: context
             )
@@ -513,7 +513,7 @@ final class GitHubConnectorTests: XCTestCase {
 
         do {
             _ = try await connector.prepareWriteRequest(
-                toolName: "github_create_branch_and_commit_changes",
+                toolName: "github_commit_file_changes",
                 arguments: """
                 {"owner":"octo","repo":"demo","commit_message":"Bad path","changes":[{"path":"../Secrets.txt","operation":"create","content":"nope"}]}
                 """

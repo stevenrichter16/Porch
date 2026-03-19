@@ -419,6 +419,21 @@ final class ChatViewModel: ObservableObject {
             messages.append(OpenAIChatMessage(role: MessageRole.system.rawValue, content: chat.systemPrompt))
         }
 
+        if settings.isGitHubConnectorEnabled,
+           githubConnector.isConfigured,
+           let ctx = chat.githubContext {
+            messages.append(OpenAIChatMessage(
+                role: MessageRole.system.rawValue,
+                content: """
+                You have access to the GitHub repository \(ctx.owner)/\(ctx.repo) (branch: \(ctx.branch)). \
+                To edit an existing file, first read it with github_get_file_content, then call \
+                github_commit_file_changes with operation "update" and the complete new file content. \
+                To add a new file, use operation "create". To remove a file, use operation "delete" with no content. \
+                You can mix create, update, and delete operations in a single commit.
+                """
+            ))
+        }
+
         let persistedMessages = try ChatMessageQueries.fetchSortedMessages(for: chat, in: modelContext)
         for message in persistedMessages {
             switch message.role {
@@ -520,7 +535,7 @@ final class ChatViewModel: ObservableObject {
             "github_get_issue": "GitHub Issue",
             "github_list_pull_requests": "GitHub Pull Requests",
             "github_get_pull_request": "GitHub Pull Request",
-            "github_create_branch_and_commit_changes": "GitHub Branch & Push"
+            "github_commit_file_changes": "GitHub Branch & Push"
         ]
         return mapping[name] ?? name
     }
