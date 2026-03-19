@@ -268,6 +268,29 @@ struct GitHubTreeResponse: Decodable {
     var tree: [Entry]
 }
 
+enum GitHubRepoTreeEntryKind: String, Codable, Equatable, Sendable {
+    case file
+    case directory
+    case symlink
+    case submodule
+}
+
+struct GitHubRepoTreeEntry: Encodable, Equatable, Sendable {
+    var path: String
+    var kind: GitHubRepoTreeEntryKind
+    var size: Int?
+}
+
+struct GitHubRepoTreeResult: Encodable, Equatable, Sendable {
+    var repository: String
+    var branch: String
+    var path_prefix: String?
+    var returned_count: Int
+    var total_matching_count: Int
+    var truncated: Bool
+    var entries: [GitHubRepoTreeEntry]
+}
+
 struct GitHubBlobResponse: Decodable {
     var sha: String
 }

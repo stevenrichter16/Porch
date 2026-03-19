@@ -571,6 +571,50 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertNil(body["tools"])
     }
 
+    func testGitHubContextExposesRecursiveTreeToolAlongsideDirectoryBrowse() async throws {
+        let keychain = MemoryKeychainStore()
+        try keychain.save("github-secret", account: "github-pat")
+        let harness = try makeHarness(
+            configureSettings: { $0.isGitHubConnectorEnabled = true },
+            configureChat: {
+                $0.applyGitHubContext(
+                    GitHubChatContext(owner: "octo", repo: "demo", fullName: "octo/demo", branch: "main")
+                )
+            },
+            keychain: keychain
+        )
+
+        MockURLProtocol.setRequestHandler { request in
+            guard request.url?.host == "server.test" else {
+                XCTFail("Unexpected request host: \(request.url?.host ?? "nil")")
+                return .data(statusCode: 500)
+            }
+
+            return .stream(bodyChunks: [
+                try self.makeSSEChunk(content: "GitHub tools are available.", finishReason: nil),
+                try self.makeSSEChunk(content: nil, finishReason: "stop"),
+                Data("data: [DONE]\n".utf8)
+            ])
+        }
+
+        harness.viewModel.composerText = "Inspect the repository"
+        harness.viewModel.sendCurrentInput()
+
+        await waitUntil {
+            !harness.viewModel.isStreaming && harness.chat.sortedMessages.count == 2
+        }
+
+        let request = try XCTUnwrap(MockURLProtocol.capturedRequests.first(where: { $0.url?.host == "server.test" }))
+        let body = try requestBodyJSON(for: request)
+        let tools = try XCTUnwrap(body["tools"] as? [[String: Any]])
+        let toolNames = tools.compactMap { tool in
+            (tool["function"] as? [String: Any])?["name"] as? String
+        }
+        XCTAssertTrue(toolNames.contains("github_get_repo_tree"))
+        XCTAssertTrue(toolNames.contains("github_get_repo_contents"))
+        XCTAssertTrue(toolNames.contains("github_get_file_content"))
+    }
+
     func testWebSearchToolsAreExposedWhenEnabledAndExecuteSearchTool() async throws {
         let harness = try makeHarness(
             configureSettings: { $0.isWebSearchConnectorEnabled = true },

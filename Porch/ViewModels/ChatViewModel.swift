@@ -513,6 +513,7 @@ final class ChatViewModel: ObservableObject {
             "web_search": "Web Search",
             "web_fetch_page": "Web Fetch Page",
             "github_search_repos": "GitHub Search",
+            "github_get_repo_tree": "GitHub Repo Tree",
             "github_get_repo_contents": "GitHub Browse Files",
             "github_get_file_content": "GitHub Read File",
             "github_list_issues": "GitHub Issues",

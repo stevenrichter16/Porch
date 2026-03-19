@@ -139,6 +139,12 @@ actor GitHubAPIClient {
         return try await perform(url: components.url!)
     }
 
+    func getRecursiveTree(owner: String, repo: String, refName: String) async throws -> GitHubTreeResponse {
+        let ref = try await getRef(owner: owner, repo: repo, ref: "heads/\(refName)")
+        let commit = try await getCommit(owner: owner, repo: repo, sha: ref.object.sha)
+        return try await getTree(owner: owner, repo: repo, sha: commit.tree.sha, recursive: true)
+    }
+
     func createBlob(owner: String, repo: String, content: String) async throws -> GitHubBlobResponse {
         struct RequestBody: Encodable {
             var content: String

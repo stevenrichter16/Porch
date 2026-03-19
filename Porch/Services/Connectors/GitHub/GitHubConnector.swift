@@ -1,6 +1,23 @@
 import Foundation
 
 final class GitHubConnector: Connector, @unchecked Sendable {
+    private enum GitHubWriteArgumentsMode: Equatable {
+        case freeform
+        case selectedContext
+
+        static let repoIdentityKeys: Set<String> = ["owner", "repo", "base_ref"]
+        static let changeFieldKeys: Set<String> = ["path", "operation", "content"]
+
+        var allowedTopLevelKeys: Set<String> {
+            switch self {
+            case .freeform:
+                return Self.repoIdentityKeys.union(["branch_name", "commit_message", "changes"])
+            case .selectedContext:
+                return ["branch_name", "commit_message", "changes"]
+            }
+        }
+    }
+
     let id = "github"
     let displayName = "GitHub"
     let iconSystemName = "chevron.left.forwardslash.chevron.right"
@@ -58,6 +75,7 @@ final class GitHubConnector: Connector, @unchecked Sendable {
 
         return [
             getRepoContentsToolForSelectedContext,
+            getRepoTreeToolForSelectedContext,
             getFileContentToolForSelectedContext,
             listIssuesToolForSelectedContext,
             getIssueToolForSelectedContext,
@@ -110,6 +128,15 @@ final class GitHubConnector: Connector, @unchecked Sendable {
                 owner: context.owner,
                 repo: context.repo,
                 ref: context.branch,
+                argsData: argsData
+            )
+        case "github_get_repo_tree":
+            return try await executeGetRepoTree(
+                client: client,
+                owner: context.owner,
+                repo: context.repo,
+                ref: context.branch,
+                repositoryFullName: context.repositoryLabel,
                 argsData: argsData
             )
         case "github_get_file_content":
@@ -169,7 +196,12 @@ final class GitHubConnector: Connector, @unchecked Sendable {
             var changes: [GitHubFileChange]
         }
 
-        let args = try decodeArgs(Args.self, from: Data(arguments.utf8))
+        let argsData = try validateGitHubWriteArguments(arguments, mode: .freeform)
+        let args = try decodeArgs(
+            Args.self,
+            from: argsData,
+            example: gitHubWriteArgumentsExample(for: .freeform)
+        )
         return try await prepareWriteRequest(
             owner: args.owner,
             repo: args.repo,
@@ -195,7 +227,12 @@ final class GitHubConnector: Connector, @unchecked Sendable {
             var changes: [GitHubFileChange]
         }
 
-        let args = try decodeArgs(Args.self, from: Data(arguments.utf8))
+        let argsData = try validateGitHubWriteArguments(arguments, mode: .selectedContext)
+        let args = try decodeArgs(
+            Args.self,
+            from: argsData,
+            example: gitHubWriteArgumentsExample(for: .selectedContext)
+        )
         return try await prepareWriteRequest(
             owner: context.owner,
             repo: context.repo,
@@ -330,6 +367,47 @@ final class GitHubConnector: Connector, @unchecked Sendable {
         let items = try await client.getRepoContents(owner: owner, repo: repo, path: args.path ?? "", ref: ref)
         let result: [[String: String]] = items.map(\.summary)
         return try encodeResult(["items": result])
+    }
+
+    private func executeGetRepoTree(
+        client: GitHubAPIClient,
+        owner: String,
+        repo: String,
+        ref: String,
+        repositoryFullName: String,
+        argsData: Data
+    ) async throws -> String {
+        struct Args: Decodable {
+            var path_prefix: String?
+            var entry_type: String?
+            var max_entries: Int?
+        }
+
+        let args = try decodeArgs(Args.self, from: argsData)
+        let pathPrefix = try normalizeTreePathPrefix(args.path_prefix)
+        let entryFilter = try parseTreeEntryFilter(args.entry_type)
+        let maxEntries = try validateMaxTreeEntries(args.max_entries)
+
+        let tree = try await client.getRecursiveTree(owner: owner, repo: repo, refName: ref)
+        let matchingEntries = tree.tree
+            .compactMap { makeRepoTreeEntry(from: $0) }
+            .filter { entry in
+                matchesTreePrefix(entry.path, pathPrefix: pathPrefix) &&
+                matchesTreeEntryFilter(entry.kind, filter: entryFilter)
+            }
+            .sorted { $0.path < $1.path }
+
+        let limitedEntries = Array(matchingEntries.prefix(maxEntries))
+        let result = GitHubRepoTreeResult(
+            repository: repositoryFullName,
+            branch: ref,
+            path_prefix: pathPrefix,
+            returned_count: limitedEntries.count,
+            total_matching_count: matchingEntries.count,
+            truncated: tree.truncated == true || matchingEntries.count > limitedEntries.count,
+            entries: limitedEntries
+        )
+        return try encodeResult(result)
     }
 
     private func executeGetFileContent(client: GitHubAPIClient, argsData: Data) async throws -> String {
@@ -490,17 +568,158 @@ final class GitHubConnector: Connector, @unchecked Sendable {
         return GitHubAPIClient(token: token, session: session)
     }
 
-    private func decodeArgs<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
+    private func decodeArgs<T: Decodable>(
+        _ type: T.Type,
+        from data: Data,
+        example: String? = nil
+    ) throws -> T {
         do {
             return try decoder.decode(T.self, from: data)
+        } catch let decodingError as DecodingError {
+            throw ConnectorError.invalidArguments(
+                appendExampleIfNeeded(formatDecodingError(decodingError), example: example)
+            )
         } catch {
-            throw ConnectorError.invalidArguments(error.localizedDescription)
+            throw ConnectorError.invalidArguments(
+                appendExampleIfNeeded(error.localizedDescription, example: example)
+            )
         }
     }
 
     private func encodeResult<T: Encodable>(_ value: T) throws -> String {
         let data = try encoder.encode(value)
         return String(data: data, encoding: .utf8) ?? "{}"
+    }
+
+    private func validateGitHubWriteArguments(
+        _ arguments: String,
+        mode: GitHubWriteArgumentsMode
+    ) throws -> Data {
+        let data = Data(arguments.utf8)
+        let jsonObject: Any
+
+        do {
+            jsonObject = try JSONSerialization.jsonObject(with: data)
+        } catch {
+            throw gitHubWriteValidationError(
+                "Arguments must be valid JSON. Ensure embedded file contents are JSON-escaped strings, with \\n for newlines and \\\" for quotes.",
+                mode: mode
+            )
+        }
+
+        guard let object = jsonObject as? [String: Any] else {
+            throw gitHubWriteValidationError("Arguments must be a JSON object.", mode: mode)
+        }
+
+        let allowedTopLevelKeys = mode.allowedTopLevelKeys
+        let unexpectedTopLevelKeys = Set(object.keys).subtracting(allowedTopLevelKeys)
+        if !unexpectedTopLevelKeys.isEmpty {
+            let sortedUnexpectedKeys = unexpectedTopLevelKeys.sorted()
+            if mode == .selectedContext && sortedUnexpectedKeys.contains(where: { GitHubWriteArgumentsMode.repoIdentityKeys.contains($0) }) {
+                throw gitHubWriteValidationError(
+                    "Do not send owner, repo, or base_ref in this chat-scoped tool call. The selected GitHub repository and base branch are already known for this chat.",
+                    mode: mode
+                )
+            }
+            if sortedUnexpectedKeys.contains(where: { GitHubWriteArgumentsMode.changeFieldKeys.contains($0) }) {
+                throw gitHubWriteValidationError(
+                    "Do not place path, operation, or content at the top level. Each file change must be an object inside changes[].",
+                    mode: mode
+                )
+            }
+            throw gitHubWriteValidationError(
+                "Unexpected top-level keys: \(sortedUnexpectedKeys.joined(separator: ", ")).",
+                mode: mode
+            )
+        }
+
+        guard let changes = object["changes"] else {
+            throw gitHubWriteValidationError("Missing required key 'changes'.", mode: mode)
+        }
+        guard let changesArray = changes as? [Any] else {
+            throw gitHubWriteValidationError("changes must be an array of file change objects.", mode: mode)
+        }
+        guard !changesArray.isEmpty else {
+            throw gitHubWriteValidationError("changes must contain at least one file change object.", mode: mode)
+        }
+
+        for (index, rawChange) in changesArray.enumerated() {
+            guard let change = rawChange as? [String: Any] else {
+                throw gitHubWriteValidationError(
+                    "changes[\(index)] must be an object with path, operation, and optional content.",
+                    mode: mode
+                )
+            }
+
+            let unexpectedChangeKeys = Set(change.keys).subtracting(GitHubWriteArgumentsMode.changeFieldKeys)
+            if !unexpectedChangeKeys.isEmpty {
+                throw gitHubWriteValidationError(
+                    "Unexpected keys in changes[\(index)]: \(unexpectedChangeKeys.sorted().joined(separator: ", ")). Allowed keys are path, operation, and content.",
+                    mode: mode
+                )
+            }
+
+            guard let operation = change["operation"] else { continue }
+            guard let operationString = operation as? String else {
+                throw gitHubWriteValidationError(
+                    "changes[\(index)].operation must be one of create, update, or delete.",
+                    mode: mode
+                )
+            }
+            guard GitHubFileOperation(rawValue: operationString) != nil else {
+                throw gitHubWriteValidationError(
+                    "changes[\(index)].operation must be one of create, update, or delete.",
+                    mode: mode
+                )
+            }
+        }
+
+        return data
+    }
+
+    private func formatDecodingError(_ error: DecodingError) -> String {
+        switch error {
+        case .keyNotFound(let key, let context):
+            return "Missing required key '\(key.stringValue)' at \(codingPathDescription(context.codingPath))."
+        case .typeMismatch(let type, let context):
+            return "Expected \(String(describing: type)) at \(codingPathDescription(context.codingPath)). \(context.debugDescription)"
+        case .valueNotFound(let type, let context):
+            return "Missing \(String(describing: type)) value at \(codingPathDescription(context.codingPath)). \(context.debugDescription)"
+        case .dataCorrupted(let context):
+            let baseMessage = "Arguments contain invalid JSON or invalid string escaping at \(codingPathDescription(context.codingPath))."
+            guard !context.debugDescription.isEmpty else {
+                return baseMessage
+            }
+            return "\(baseMessage) \(context.debugDescription)"
+        @unknown default:
+            return "Arguments do not match the expected JSON format."
+        }
+    }
+
+    private func codingPathDescription(_ codingPath: [CodingKey]) -> String {
+        guard !codingPath.isEmpty else {
+            return "root"
+        }
+
+        return codingPath.map { key in
+            if let intValue = key.intValue {
+                return "[\(intValue)]"
+            }
+            return key.stringValue
+        }
+        .joined(separator: ".")
+    }
+
+    private func appendExampleIfNeeded(_ message: String, example: String?) -> String {
+        guard let example else { return message }
+        return "\(message) Example: \(example)"
+    }
+
+    private func gitHubWriteValidationError(
+        _ message: String,
+        mode: GitHubWriteArgumentsMode
+    ) -> ConnectorError {
+        .invalidArguments(appendExampleIfNeeded(message, example: gitHubWriteArgumentsExample(for: mode)))
     }
 
     private func prepareWriteRequest(
@@ -734,6 +953,110 @@ final class GitHubConnector: Connector, @unchecked Sendable {
         return components.joined(separator: "/")
     }
 
+    private func normalizeTreePathPrefix(_ rawPrefix: String?) throws -> String? {
+        guard let rawPrefix else { return nil }
+
+        let trimmed = rawPrefix.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        let normalized = trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard !normalized.isEmpty else { return nil }
+
+        let components = normalized
+            .split(separator: "/", omittingEmptySubsequences: true)
+            .map(String.init)
+
+        guard !components.isEmpty else {
+            return nil
+        }
+        guard !components.contains(".") else {
+            throw ConnectorError.invalidArguments("path_prefix must not contain '.' segments.")
+        }
+        guard !components.contains("..") else {
+            throw ConnectorError.invalidArguments("path_prefix must not contain '..' segments.")
+        }
+        guard !components.contains(".git") else {
+            throw ConnectorError.invalidArguments("path_prefix must not target git internals.")
+        }
+
+        return components.joined(separator: "/")
+    }
+
+    private enum RepoTreeEntryFilter: String {
+        case all
+        case files
+        case directories
+    }
+
+    private func parseTreeEntryFilter(_ rawValue: String?) throws -> RepoTreeEntryFilter {
+        guard let rawValue else { return .all }
+
+        let normalized = rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard let filter = RepoTreeEntryFilter(rawValue: normalized) else {
+            throw ConnectorError.invalidArguments("entry_type must be one of: all, files, directories.")
+        }
+        return filter
+    }
+
+    private func validateMaxTreeEntries(_ rawValue: Int?) throws -> Int {
+        let resolved = rawValue ?? 400
+        guard resolved > 0 else {
+            throw ConnectorError.invalidArguments("max_entries must be greater than 0.")
+        }
+        guard resolved <= 1_000 else {
+            throw ConnectorError.invalidArguments("max_entries must be 1000 or less.")
+        }
+        return resolved
+    }
+
+    private func makeRepoTreeEntry(from entry: GitHubTreeResponse.Entry) -> GitHubRepoTreeEntry? {
+        guard !entry.path.isEmpty else { return nil }
+        guard let kind = mapRepoTreeEntryKind(for: entry) else { return nil }
+        return GitHubRepoTreeEntry(path: entry.path, kind: kind, size: entry.size)
+    }
+
+    private func mapRepoTreeEntryKind(for entry: GitHubTreeResponse.Entry) -> GitHubRepoTreeEntryKind? {
+        switch entry.mode {
+        case "040000":
+            return .directory
+        case "100644", "100755":
+            return .file
+        case "120000":
+            return .symlink
+        case "160000":
+            return .submodule
+        default:
+            break
+        }
+
+        switch entry.type {
+        case "tree":
+            return .directory
+        case "blob":
+            return .file
+        case "commit":
+            return .submodule
+        default:
+            return nil
+        }
+    }
+
+    private func matchesTreePrefix(_ path: String, pathPrefix: String?) -> Bool {
+        guard let pathPrefix else { return true }
+        return path == pathPrefix || path.hasPrefix(pathPrefix + "/")
+    }
+
+    private func matchesTreeEntryFilter(_ kind: GitHubRepoTreeEntryKind, filter: RepoTreeEntryFilter) -> Bool {
+        switch filter {
+        case .all:
+            return true
+        case .files:
+            return kind == .file
+        case .directories:
+            return kind == .directory
+        }
+    }
+
     private func resolveBaseRef(
         requestedBaseRef: String?,
         owner: String,
@@ -964,6 +1287,111 @@ final class GitHubConnector: Connector, @unchecked Sendable {
 
     // MARK: - Tool Definitions
 
+    private var gitHubWriteChangeSchema: JSONSchemaValue {
+        .object([
+            "type": .string("object"),
+            "additionalProperties": .bool(false),
+            "properties": .object([
+                "path": .object([
+                    "type": .string("string"),
+                    "description": .string("Repository-relative file path for exactly one file.")
+                ]),
+                "operation": .object([
+                    "type": .string("string"),
+                    "enum": .array(GitHubFileOperation.allCases.map { .string($0.rawValue) }),
+                    "description": .string("One of: create, update, delete.")
+                ]),
+                "content": .object([
+                    "type": .string("string"),
+                    "description": .string("Required for create and update. Omit for delete. This must be a JSON-escaped string.")
+                ])
+            ]),
+            "required": .array([
+                .string("path"),
+                .string("operation")
+            ])
+        ])
+    }
+
+    private func gitHubWriteArgumentsSchema(for mode: GitHubWriteArgumentsMode) -> JSONSchemaValue {
+        var properties: [String: JSONSchemaValue] = [
+            "branch_name": .object([
+                "type": .string("string"),
+                "description": .string("Optional branch name. If omitted, Porch generates a new porch/<slug>-<timestamp> branch.")
+            ]),
+            "commit_message": .object([
+                "type": .string("string"),
+                "description": .string("Commit message for the one commit that Porch will create.")
+            ]),
+            "changes": .object([
+                "type": .string("array"),
+                "description": .string("An array of up to 20 file change objects. Each object represents one file and must contain path and operation."),
+                "items": gitHubWriteChangeSchema
+            ])
+        ]
+
+        var required: [JSONSchemaValue] = [
+            .string("commit_message"),
+            .string("changes")
+        ]
+
+        if mode == .freeform {
+            properties["owner"] = .object([
+                "type": .string("string"),
+                "description": .string("Repository owner.")
+            ])
+            properties["repo"] = .object([
+                "type": .string("string"),
+                "description": .string("Repository name.")
+            ])
+            properties["base_ref"] = .object([
+                "type": .string("string"),
+                "description": .string("Optional base branch name. Defaults to main, then the repository default branch.")
+            ])
+            required.insert(.string("owner"), at: 0)
+            required.insert(.string("repo"), at: 1)
+        }
+
+        return .object([
+            "type": .string("object"),
+            "additionalProperties": .bool(false),
+            "properties": .object(properties),
+            "required": .array(required),
+            "examples": .array([gitHubWriteArgumentsExampleSchema(for: mode)])
+        ])
+    }
+
+    private func gitHubWriteArgumentsExampleSchema(for mode: GitHubWriteArgumentsMode) -> JSONSchemaValue {
+        var example: [String: JSONSchemaValue] = [
+            "branch_name": .string("feature/websearch-tests"),
+            "commit_message": .string("Add web search connector tests"),
+            "changes": .array([
+                .object([
+                    "path": .string("PorchTests/WebSearchConnectorTests.swift"),
+                    "operation": .string("create"),
+                    "content": .string("import XCTest\\n")
+                ])
+            ])
+        ]
+
+        if mode == .freeform {
+            example["owner"] = .string("octo")
+            example["repo"] = .string("demo")
+            example["base_ref"] = .string("main")
+        }
+
+        return .object(example)
+    }
+
+    private func gitHubWriteArgumentsExample(for mode: GitHubWriteArgumentsMode) -> String {
+        switch mode {
+        case .freeform:
+            return #"{"owner":"octo","repo":"demo","base_ref":"main","branch_name":"feature/websearch-tests","commit_message":"Add web search connector tests","changes":[{"path":"PorchTests/WebSearchConnectorTests.swift","operation":"create","content":"import XCTest\\n"}]}"#
+        case .selectedContext:
+            return #"{"branch_name":"feature/websearch-tests","commit_message":"Add web search connector tests","changes":[{"path":"PorchTests/WebSearchConnectorTests.swift","operation":"create","content":"import XCTest\\n"}]}"#
+        }
+    }
+
     private var searchReposTool: ToolDefinition {
         ToolDefinition(function: FunctionDefinitionBody(
             name: "github_search_repos",
@@ -988,7 +1416,7 @@ final class GitHubConnector: Connector, @unchecked Sendable {
     private var getRepoContentsTool: ToolDefinition {
         ToolDefinition(function: FunctionDefinitionBody(
             name: "github_get_repo_contents",
-            description: "List files and directories in a GitHub repository path. Use to browse the file tree.",
+            description: "List exactly one directory level in a GitHub repository path. This is not recursive. Use github_get_repo_tree first when you need to discover nested paths across the repository, then use this for focused folder browsing.",
             parameters: .object([
                 "type": .string("object"),
                 "properties": .object([
@@ -1017,13 +1445,38 @@ final class GitHubConnector: Connector, @unchecked Sendable {
     private var getRepoContentsToolForSelectedContext: ToolDefinition {
         ToolDefinition(function: FunctionDefinitionBody(
             name: "github_get_repo_contents",
-            description: "List files and directories in the currently selected GitHub repository and branch. Use to browse the file tree.",
+            description: "List exactly one directory level in the currently selected GitHub repository and branch. This is not recursive. Use github_get_repo_tree first when you need to discover nested paths, then use this for focused folder browsing.",
             parameters: .object([
                 "type": .string("object"),
                 "properties": .object([
                     "path": .object([
                         "type": .string("string"),
                         "description": .string("Path within the selected repository (default: root)")
+                    ])
+                ]),
+                "required": .array([])
+            ])
+        ))
+    }
+
+    private var getRepoTreeToolForSelectedContext: ToolDefinition {
+        ToolDefinition(function: FunctionDefinitionBody(
+            name: "github_get_repo_tree",
+            description: "Recursively list nested paths in the currently selected GitHub repository and branch. Use this first to discover exact repo-relative file paths, then call github_get_file_content for specific files, and only then prepare github_create_branch_and_commit_changes. You can also call github_get_repo_contents(path: ...) afterward for focused directory browsing.",
+            parameters: .object([
+                "type": .string("object"),
+                "properties": .object([
+                    "path_prefix": .object([
+                        "type": .string("string"),
+                        "description": .string("Optional subtree prefix to narrow results, such as 'Sources' or '.github/workflows'.")
+                    ]),
+                    "entry_type": .object([
+                        "type": .string("string"),
+                        "description": .string("Filter results by type: 'all' (default), 'files', or 'directories'.")
+                    ]),
+                    "max_entries": .object([
+                        "type": .string("integer"),
+                        "description": .string("Maximum number of returned entries (default 400, max 1000).")
                     ])
                 ]),
                 "required": .array([])
@@ -1264,112 +1717,16 @@ final class GitHubConnector: Connector, @unchecked Sendable {
     private var createBranchAndCommitChangesTool: ToolDefinition {
         ToolDefinition(function: FunctionDefinitionBody(
             name: "github_create_branch_and_commit_changes",
-            description: "Prepare a new GitHub branch and one commit containing text file create, update, or delete changes. Requires explicit user approval before any write occurs.",
-            parameters: .object([
-                "type": .string("object"),
-                "properties": .object([
-                    "owner": .object([
-                        "type": .string("string"),
-                        "description": .string("Repository owner")
-                    ]),
-                    "repo": .object([
-                        "type": .string("string"),
-                        "description": .string("Repository name")
-                    ]),
-                    "base_ref": .object([
-                        "type": .string("string"),
-                        "description": .string("Optional base branch name. Defaults to main, then the repository default branch.")
-                    ]),
-                    "branch_name": .object([
-                        "type": .string("string"),
-                        "description": .string("Optional branch name. If omitted, Porch generates a new porch/<slug>-<timestamp> branch.")
-                    ]),
-                    "commit_message": .object([
-                        "type": .string("string"),
-                        "description": .string("Commit message for the one commit that Porch will create.")
-                    ]),
-                    "changes": .object([
-                        "type": .string("array"),
-                        "description": .string("Up to 20 text file changes to create, update, or delete."),
-                        "items": .object([
-                            "type": .string("object"),
-                            "properties": .object([
-                                "path": .object([
-                                    "type": .string("string"),
-                                    "description": .string("Repository-relative file path")
-                                ]),
-                                "operation": .object([
-                                    "type": .string("string"),
-                                    "description": .string("One of: create, update, delete")
-                                ]),
-                                "content": .object([
-                                    "type": .string("string"),
-                                    "description": .string("Required for create/update. Must be omitted for delete.")
-                                ])
-                            ]),
-                            "required": .array([
-                                .string("path"),
-                                .string("operation")
-                            ])
-                        ])
-                    ])
-                ]),
-                "required": .array([
-                    .string("owner"),
-                    .string("repo"),
-                    .string("commit_message"),
-                    .string("changes")
-                ])
-            ])
+            description: "Prepare a new GitHub branch and one commit containing text file create, update, or delete changes. This free-form variant requires owner and repo, and optionally base_ref. Each element of changes[] represents one file. Requires explicit user approval before any write occurs.",
+            parameters: gitHubWriteArgumentsSchema(for: .freeform)
         ))
     }
 
     private var createBranchAndCommitChangesToolForSelectedContext: ToolDefinition {
         ToolDefinition(function: FunctionDefinitionBody(
             name: "github_create_branch_and_commit_changes",
-            description: "Prepare a new branch from the currently selected GitHub base branch and one commit containing text file create, update, or delete changes. Requires explicit user approval before any write occurs.",
-            parameters: .object([
-                "type": .string("object"),
-                "properties": .object([
-                    "branch_name": .object([
-                        "type": .string("string"),
-                        "description": .string("Optional branch name. If omitted, Porch generates a new porch/<slug>-<timestamp> branch.")
-                    ]),
-                    "commit_message": .object([
-                        "type": .string("string"),
-                        "description": .string("Commit message for the one commit that Porch will create.")
-                    ]),
-                    "changes": .object([
-                        "type": .string("array"),
-                        "description": .string("Up to 20 text file changes to create, update, or delete."),
-                        "items": .object([
-                            "type": .string("object"),
-                            "properties": .object([
-                                "path": .object([
-                                    "type": .string("string"),
-                                    "description": .string("Repository-relative file path")
-                                ]),
-                                "operation": .object([
-                                    "type": .string("string"),
-                                    "description": .string("One of: create, update, delete")
-                                ]),
-                                "content": .object([
-                                    "type": .string("string"),
-                                    "description": .string("Required for create/update. Must be omitted for delete.")
-                                ])
-                            ]),
-                            "required": .array([
-                                .string("path"),
-                                .string("operation")
-                            ])
-                        ])
-                    ])
-                ]),
-                "required": .array([
-                    .string("commit_message"),
-                    .string("changes")
-                ])
-            ])
+            description: "Prepare a new branch from the currently selected GitHub base branch and one commit containing text file create, update, or delete changes. Do not send owner, repo, or base_ref here; the selected repository and base branch are already known for this chat. Put path, operation, and optional content inside each changes[] item, where each item represents one file. Requires explicit user approval before any write occurs.",
+            parameters: gitHubWriteArgumentsSchema(for: .selectedContext)
         ))
     }
 }
