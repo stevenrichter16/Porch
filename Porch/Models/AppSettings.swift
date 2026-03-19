@@ -1,1 +1,1 @@
-typealias AppSettings = PorchSchemaV5.AppSettings
+// AppSettings alias for Porch schema
