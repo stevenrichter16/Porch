@@ -706,7 +706,7 @@ final class ChatViewModelTests: XCTestCase {
             switch (url.host, request.httpMethod, url.path) {
             case ("server.test", "POST", "/v1/chat/completions"):
                 return .stream(bodyChunks: try self.makeToolCallSSEChunks(
-                    toolName: "github_create_branch_and_commit_changes",
+                    toolName: "github_commit_file_changes",
                     arguments: self.makeGitHubWriteArguments()
                 ))
 
@@ -805,7 +805,7 @@ final class ChatViewModelTests: XCTestCase {
             case ("server.test", "POST", "/v1/chat/completions"):
                 if localRequestCounter.next() == 0 {
                     return .stream(bodyChunks: try self.makeToolCallSSEChunks(
-                        toolName: "github_create_branch_and_commit_changes",
+                        toolName: "github_commit_file_changes",
                         arguments: self.makeGitHubWriteArguments()
                     ))
                 }
@@ -905,7 +905,7 @@ final class ChatViewModelTests: XCTestCase {
             case ("server.test", "POST", "/v1/chat/completions"):
                 if localRequestCounter.next() == 0 {
                     return .stream(bodyChunks: try self.makeToolCallSSEChunks(
-                        toolName: "github_create_branch_and_commit_changes",
+                        toolName: "github_commit_file_changes",
                         arguments: self.makeGitHubWriteArguments()
                     ))
                 }

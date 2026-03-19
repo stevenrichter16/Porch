@@ -106,7 +106,7 @@ final class GitHubConnector: Connector, @unchecked Sendable {
             return try await executeListPullRequests(client: client, argsData: argsData)
         case "github_get_pull_request":
             return try await executeGetPullRequest(client: client, argsData: argsData)
-        case "github_create_branch_and_commit_changes":
+        case "github_commit_file_changes":
             throw ConnectorError.apiError("GitHub write tools require explicit approval before execution.")
         default:
             throw ConnectorError.unknownTool(toolName)
@@ -175,7 +175,7 @@ final class GitHubConnector: Connector, @unchecked Sendable {
                 repo: context.repo,
                 argsData: argsData
             )
-        case "github_create_branch_and_commit_changes":
+        case "github_commit_file_changes":
             throw ConnectorError.apiError("GitHub write tools require explicit approval before execution.")
         default:
             throw ConnectorError.unknownTool(toolName)
@@ -1299,7 +1299,7 @@ final class GitHubConnector: Connector, @unchecked Sendable {
                 "operation": .object([
                     "type": .string("string"),
                     "enum": .array(GitHubFileOperation.allCases.map { .string($0.rawValue) }),
-                    "description": .string("One of: create, update, delete.")
+                    "description": .string("create — add a new file (must not already exist); update — replace an existing file with new content (must already exist; first read it with github_get_file_content, then provide the complete modified file content); delete — remove a file (must exist, omit content).")
                 ]),
                 "content": .object([
                     "type": .string("string"),
@@ -1363,13 +1363,18 @@ final class GitHubConnector: Connector, @unchecked Sendable {
 
     private func gitHubWriteArgumentsExampleSchema(for mode: GitHubWriteArgumentsMode) -> JSONSchemaValue {
         var example: [String: JSONSchemaValue] = [
-            "branch_name": .string("feature/websearch-tests"),
-            "commit_message": .string("Add web search connector tests"),
+            "branch_name": .string("feature/update-config"),
+            "commit_message": .string("Update config and add tests"),
             "changes": .array([
                 .object([
-                    "path": .string("PorchTests/WebSearchConnectorTests.swift"),
+                    "path": .string("Sources/Config.swift"),
+                    "operation": .string("update"),
+                    "content": .string("// Updated Config.swift with new settings\nstruct Config {\n    let version = 2\n}\n")
+                ]),
+                .object([
+                    "path": .string("Tests/ConfigTests.swift"),
                     "operation": .string("create"),
-                    "content": .string("import XCTest\\n")
+                    "content": .string("import XCTest\n@testable import App\n\nfinal class ConfigTests: XCTestCase {\n    func testVersion() {\n        XCTAssertEqual(Config().version, 2)\n    }\n}\n")
                 ])
             ])
         ]
@@ -1386,9 +1391,9 @@ final class GitHubConnector: Connector, @unchecked Sendable {
     private func gitHubWriteArgumentsExample(for mode: GitHubWriteArgumentsMode) -> String {
         switch mode {
         case .freeform:
-            return #"{"owner":"octo","repo":"demo","base_ref":"main","branch_name":"feature/websearch-tests","commit_message":"Add web search connector tests","changes":[{"path":"PorchTests/WebSearchConnectorTests.swift","operation":"create","content":"import XCTest\\n"}]}"#
+            return #"{"owner":"octo","repo":"demo","base_ref":"main","branch_name":"feature/update-config","commit_message":"Update config and add tests","changes":[{"path":"Sources/Config.swift","operation":"update","content":"struct Config {\n    let version = 2\n}\n"},{"path":"Tests/ConfigTests.swift","operation":"create","content":"import XCTest\n"}]}"#
         case .selectedContext:
-            return #"{"branch_name":"feature/websearch-tests","commit_message":"Add web search connector tests","changes":[{"path":"PorchTests/WebSearchConnectorTests.swift","operation":"create","content":"import XCTest\\n"}]}"#
+            return #"{"branch_name":"feature/update-config","commit_message":"Update config and add tests","changes":[{"path":"Sources/Config.swift","operation":"update","content":"struct Config {\n    let version = 2\n}\n"},{"path":"Tests/ConfigTests.swift","operation":"create","content":"import XCTest\n"}]}"#
         }
     }
 
@@ -1462,7 +1467,7 @@ final class GitHubConnector: Connector, @unchecked Sendable {
     private var getRepoTreeToolForSelectedContext: ToolDefinition {
         ToolDefinition(function: FunctionDefinitionBody(
             name: "github_get_repo_tree",
-            description: "Recursively list nested paths in the currently selected GitHub repository and branch. Use this first to discover exact repo-relative file paths, then call github_get_file_content for specific files, and only then prepare github_create_branch_and_commit_changes. You can also call github_get_repo_contents(path: ...) afterward for focused directory browsing.",
+            description: "Recursively list nested paths in the currently selected GitHub repository and branch. Use this first to discover exact repo-relative file paths, then call github_get_file_content for specific files, and only then prepare github_commit_file_changes to create, update, or delete files. You can also call github_get_repo_contents(path: ...) afterward for focused directory browsing.",
             parameters: .object([
                 "type": .string("object"),
                 "properties": .object([
@@ -1716,16 +1721,16 @@ final class GitHubConnector: Connector, @unchecked Sendable {
 
     private var createBranchAndCommitChangesTool: ToolDefinition {
         ToolDefinition(function: FunctionDefinitionBody(
-            name: "github_create_branch_and_commit_changes",
-            description: "Prepare a new GitHub branch and one commit containing text file create, update, or delete changes. This free-form variant requires owner and repo, and optionally base_ref. Each element of changes[] represents one file. Requires explicit user approval before any write occurs.",
+            name: "github_commit_file_changes",
+            description: "Commit file changes to a new GitHub branch. Supports three operations per file: 'create' (new file), 'update' (replace an existing file — read it first with github_get_file_content, then provide the complete modified content), and 'delete' (remove a file). This free-form variant requires owner and repo, and optionally base_ref. Each element of changes[] represents one file. Requires explicit user approval before any write occurs.",
             parameters: gitHubWriteArgumentsSchema(for: .freeform)
         ))
     }
 
     private var createBranchAndCommitChangesToolForSelectedContext: ToolDefinition {
         ToolDefinition(function: FunctionDefinitionBody(
-            name: "github_create_branch_and_commit_changes",
-            description: "Prepare a new branch from the currently selected GitHub base branch and one commit containing text file create, update, or delete changes. Do not send owner, repo, or base_ref here; the selected repository and base branch are already known for this chat. Put path, operation, and optional content inside each changes[] item, where each item represents one file. Requires explicit user approval before any write occurs.",
+            name: "github_commit_file_changes",
+            description: "Commit file changes to a new branch from the currently selected GitHub base branch. Supports three operations per file: 'create' (new file), 'update' (replace an existing file — read it first with github_get_file_content, then provide the complete modified content), and 'delete' (remove a file). Do not send owner, repo, or base_ref here; the selected repository and base branch are already known for this chat. Put path, operation, and optional content inside each changes[] item, where each item represents one file. Requires explicit user approval before any write occurs.",
             parameters: gitHubWriteArgumentsSchema(for: .selectedContext)
         ))
     }
