@@ -47,6 +47,8 @@ struct ToolCallBubble: View {
 
     private var displayTitle: String {
         let mapping: [String: String] = [
+            "web_search": "Searched the web",
+            "web_fetch_page": "Read web page",
             "github_search_repos": "Searched repositories",
             "github_get_repo_contents": "Browsed file tree",
             "github_get_file_content": "Read file content",
@@ -60,6 +62,8 @@ struct ToolCallBubble: View {
             return mapping[toolName] ?? "Tool: \(toolName)"
         }
         let callMapping: [String: String] = [
+            "web_search": "Searching the web...",
+            "web_fetch_page": "Reading web page...",
             "github_search_repos": "Searching repositories...",
             "github_get_repo_contents": "Browsing file tree...",
             "github_get_file_content": "Reading file...",

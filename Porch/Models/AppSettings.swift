@@ -1,1 +1,1 @@
-typealias AppSettings = PorchSchemaV4.AppSettings
+typealias AppSettings = PorchSchemaV5.AppSettings

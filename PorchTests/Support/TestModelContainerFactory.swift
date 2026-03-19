@@ -3,7 +3,7 @@ import SwiftData
 
 enum TestModelContainerFactory {
     static func makeContainer() throws -> ModelContainer {
-        let schema = Schema(versionedSchema: PorchSchemaV4.self)
+        let schema = Schema(versionedSchema: PorchSchemaV5.self)
         let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
         return try ModelContainer(
             for: schema,

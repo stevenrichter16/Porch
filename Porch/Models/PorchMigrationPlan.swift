@@ -6,7 +6,8 @@ enum PorchMigrationPlan: SchemaMigrationPlan {
             PorchSchemaV1.self,
             PorchSchemaV2.self,
             PorchSchemaV3.self,
-            PorchSchemaV4.self
+            PorchSchemaV4.self,
+            PorchSchemaV5.self
         ]
     }
 
@@ -14,7 +15,8 @@ enum PorchMigrationPlan: SchemaMigrationPlan {
         [
             migrateV1ToV2,
             migrateV2ToV3,
-            migrateV3ToV4
+            migrateV3ToV4,
+            migrateV4ToV5
         ]
     }
 
@@ -43,5 +45,22 @@ enum PorchMigrationPlan: SchemaMigrationPlan {
     static let migrateV3ToV4 = MigrationStage.lightweight(
         fromVersion: PorchSchemaV3.self,
         toVersion: PorchSchemaV4.self
+    )
+
+    static let migrateV4ToV5 = MigrationStage.custom(
+        fromVersion: PorchSchemaV4.self,
+        toVersion: PorchSchemaV5.self,
+        willMigrate: { _ in },
+        didMigrate: { context in
+            let settingsRecords = try context.fetch(FetchDescriptor<PorchSchemaV5.AppSettings>())
+            for settings in settingsRecords {
+                settings.isWebSearchConnectorEnabled = false
+                settings.markUpdated()
+            }
+
+            if !settingsRecords.isEmpty {
+                try context.save()
+            }
+        }
     )
 }

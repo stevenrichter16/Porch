@@ -45,7 +45,7 @@ final class PersistenceTests: XCTestCase {
             try context.save()
         }
 
-        let schema = Schema(versionedSchema: PorchSchemaV4.self)
+        let schema = Schema(versionedSchema: PorchSchemaV5.self)
         let configuration = ModelConfiguration(schema: schema, url: storeURL)
         let container = try ModelContainer(
             for: schema,
@@ -107,7 +107,7 @@ final class PersistenceTests: XCTestCase {
             try context.save()
         }
 
-        let schema = Schema(versionedSchema: PorchSchemaV4.self)
+        let schema = Schema(versionedSchema: PorchSchemaV5.self)
         let configuration = ModelConfiguration(schema: schema, url: storeURL)
         let container = try ModelContainer(
             for: schema,
@@ -120,12 +120,13 @@ final class PersistenceTests: XCTestCase {
         let messages = try ChatMessageQueries.fetchSortedMessages(for: thread, in: context)
 
         XCTAssertFalse(settings.isGitHubConnectorEnabled)
+        XCTAssertFalse(settings.isWebSearchConnectorEnabled)
         XCTAssertEqual(thread.modelID, "model")
         XCTAssertEqual(messages.map(\.content), ["Latest reply"])
         XCTAssertNil(thread.githubContext)
     }
 
-    func testMigrationFromV3StoreInitializesEmptyGitHubContextInV4() throws {
+    func testMigrationFromV3StoreInitializesEmptyGitHubContextInLatestSchema() throws {
         let storeDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         let storeURL = storeDirectory.appendingPathComponent("Porch.store")
@@ -153,7 +154,7 @@ final class PersistenceTests: XCTestCase {
             try context.save()
         }
 
-        let schema = Schema(versionedSchema: PorchSchemaV4.self)
+        let schema = Schema(versionedSchema: PorchSchemaV5.self)
         let configuration = ModelConfiguration(schema: schema, url: storeURL)
         let container = try ModelContainer(
             for: schema,
@@ -168,6 +169,41 @@ final class PersistenceTests: XCTestCase {
         XCTAssertNil(thread.githubRepoName)
         XCTAssertNil(thread.githubRepoFullName)
         XCTAssertNil(thread.githubBranchName)
+    }
+
+    func testMigrationFromV4StoreInitializesWebSearchConnectorDisabledInV5() throws {
+        let storeDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let storeURL = storeDirectory.appendingPathComponent("Porch.store")
+        try FileManager.default.createDirectory(at: storeDirectory, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: storeDirectory)
+        }
+
+        do {
+            let schema = Schema(versionedSchema: PorchSchemaV4.self)
+            let configuration = ModelConfiguration(schema: schema, url: storeURL)
+            let container = try ModelContainer(for: schema, configurations: [configuration])
+            let context = ModelContext(container)
+
+            let settings = PorchSchemaV4.AppSettings()
+            settings.isGitHubConnectorEnabled = true
+            context.insert(settings)
+            try context.save()
+        }
+
+        let schema = Schema(versionedSchema: PorchSchemaV5.self)
+        let configuration = ModelConfiguration(schema: schema, url: storeURL)
+        let container = try ModelContainer(
+            for: schema,
+            migrationPlan: PorchMigrationPlan.self,
+            configurations: [configuration]
+        )
+        let context = ModelContext(container)
+        let settings = try XCTUnwrap(context.fetch(FetchDescriptor<AppSettings>()).first)
+
+        XCTAssertTrue(settings.isGitHubConnectorEnabled)
+        XCTAssertFalse(settings.isWebSearchConnectorEnabled)
     }
 
     func testNewThreadStartsWithEmptyLastMessagePreview() {
@@ -221,7 +257,7 @@ final class PersistenceTests: XCTestCase {
             try? FileManager.default.removeItem(at: storeDirectory)
         }
 
-        let schema = Schema(versionedSchema: PorchSchemaV4.self)
+        let schema = Schema(versionedSchema: PorchSchemaV5.self)
         let configuration = ModelConfiguration(schema: schema, url: storeURL)
 
         do {

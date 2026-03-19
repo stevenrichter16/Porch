@@ -22,6 +22,7 @@ final class ChatViewModel: ObservableObject {
     private let keychain: KeychainStoreProtocol
     private let apiKeyAccount = "active-server-api-key"
     private let githubConnector: GitHubConnector
+    private let webSearchConnector: WebSearchConnector
 
     private var streamTask: Task<Void, Never>?
     private var stopRequested = false
@@ -33,7 +34,8 @@ final class ChatViewModel: ObservableObject {
         modelContext: ModelContext,
         client: OpenAICompatibleClient = OpenAICompatibleClient(),
         keychain: KeychainStoreProtocol = KeychainStore(),
-        githubConnector: GitHubConnector = GitHubConnector()
+        githubConnector: GitHubConnector = GitHubConnector(),
+        webSearchConnector: WebSearchConnector = WebSearchConnector()
     ) {
         self.chat = chat
         self.settings = settings
@@ -41,6 +43,7 @@ final class ChatViewModel: ObservableObject {
         self.client = client
         self.keychain = keychain
         self.githubConnector = githubConnector
+        self.webSearchConnector = webSearchConnector
     }
 
     deinit {
@@ -297,19 +300,34 @@ final class ChatViewModel: ObservableObject {
     }
 
     private func resolveToolDefinitions() -> [ToolDefinition]? {
-        guard
-            settings.isGitHubConnectorEnabled,
-            githubConnector.isConfigured,
-            let githubContext = chat.githubContext
-        else {
-            return nil
+        var tools: [ToolDefinition] = []
+
+        if settings.isWebSearchConnectorEnabled, webSearchConnector.isConfigured {
+            tools.append(contentsOf: webSearchConnector.toolDefinitions)
         }
 
-        let tools = githubConnector.toolDefinitions(for: githubContext)
+        if settings.isGitHubConnectorEnabled,
+           githubConnector.isConfigured,
+           let githubContext = chat.githubContext {
+            tools.append(contentsOf: githubConnector.toolDefinitions(for: githubContext))
+        }
+
         return tools.isEmpty ? nil : tools
     }
 
     private func executeToolCall(_ toolCall: ToolCall) async -> String? {
+        if settings.isWebSearchConnectorEnabled,
+           webSearchConnector.toolDefinitions.contains(where: { $0.function.name == toolCall.function.name }) {
+            do {
+                return try await webSearchConnector.execute(
+                    toolName: toolCall.function.name,
+                    arguments: toolCall.function.arguments
+                )
+            } catch {
+                return "{\"error\": \"\(error.localizedDescription)\"}"
+            }
+        }
+
         do {
             guard let githubContext = chat.githubContext else {
                 return "{\"error\":\"GitHub tools require a selected repository and branch in this chat.\"}"
@@ -492,6 +510,8 @@ final class ChatViewModel: ObservableObject {
 
     private func humanReadableToolName(_ name: String) -> String {
         let mapping: [String: String] = [
+            "web_search": "Web Search",
+            "web_fetch_page": "Web Fetch Page",
             "github_search_repos": "GitHub Search",
             "github_get_repo_contents": "GitHub Browse Files",
             "github_get_file_content": "GitHub Read File",

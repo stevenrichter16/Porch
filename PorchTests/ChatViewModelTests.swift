@@ -571,6 +571,76 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertNil(body["tools"])
     }
 
+    func testWebSearchToolsAreExposedWhenEnabledAndExecuteSearchTool() async throws {
+        let harness = try makeHarness(
+            configureSettings: { $0.isWebSearchConnectorEnabled = true },
+            webSearchConnector: WebSearchConnector(session: TestSessionFactory.makeSession())
+        )
+        let requestCounter = LockedCounter()
+
+        MockURLProtocol.setRequestHandler { request in
+            guard let url = request.url else {
+                return .data(statusCode: 500)
+            }
+
+            switch (url.host, request.httpMethod, url.path) {
+            case ("server.test", "POST", "/v1/chat/completions"):
+                if requestCounter.next() == 0 {
+                    return .stream(bodyChunks: try self.makeToolCallSSEChunks(
+                        toolName: "web_search",
+                        arguments: #"{"query":"porch coding app","max_results":1}"#
+                    ))
+                }
+                return .stream(bodyChunks: [
+                    try self.makeSSEChunk(content: "I found a useful result.", finishReason: nil),
+                    try self.makeSSEChunk(content: nil, finishReason: "stop"),
+                    Data("data: [DONE]\n".utf8)
+                ])
+
+            case ("html.duckduckgo.com", "GET", let path) where path.hasPrefix("/html"):
+                return .data(body: Data("""
+                <html><body>
+                <div class="result__body">
+                  <h2><a class="result__a" href="https://example.com/porch">Porch Search Result</a></h2>
+                  <a class="result__snippet">A concise snippet about Porch.</a>
+                </div>
+                </body></html>
+                """.utf8))
+
+            default:
+                XCTFail("Unexpected request: \(request.httpMethod ?? "?") \(url)")
+                return .data(statusCode: 500)
+            }
+        }
+
+        harness.viewModel.composerText = "Search the web"
+        harness.viewModel.sendCurrentInput()
+
+        await waitUntil {
+            !harness.viewModel.isStreaming && harness.chat.sortedMessages.count == 4
+        }
+
+        let serverRequests = MockURLProtocol.capturedRequests.filter {
+            $0.url?.host == "server.test" && $0.httpMethod == "POST"
+        }
+        XCTAssertEqual(serverRequests.count, 2)
+
+        let firstBody = try requestBodyJSON(for: serverRequests[0])
+        let tools = try XCTUnwrap(firstBody["tools"] as? [[String: Any]])
+        let toolNames = tools.compactMap { tool in
+            (tool["function"] as? [String: Any])?["name"] as? String
+        }
+        XCTAssertTrue(toolNames.contains("web_search"))
+        XCTAssertTrue(toolNames.contains("web_fetch_page"))
+
+        let toolMessage = try XCTUnwrap(harness.chat.sortedMessages.first(where: { $0.role == .tool }))
+        let toolPayload = try makeJSONObject(from: toolMessage.content)
+        let results = try XCTUnwrap(toolPayload["results"] as? [[String: Any]])
+        XCTAssertEqual(results.first?["title"] as? String, "Porch Search Result")
+        XCTAssertEqual(results.first?["url"] as? String, "https://example.com/porch")
+        XCTAssertEqual(harness.chat.sortedMessages.last?.content, "I found a useful result.")
+    }
+
     func testGitHubWriteToolWaitsForApprovalAndStopCancelsWithoutWriting() async throws {
         let keychain = MemoryKeychainStore()
         try keychain.save("github-secret", account: "github-pat")
@@ -909,7 +979,8 @@ final class ChatViewModelTests: XCTestCase {
         configureSettings: ((AppSettings) -> Void)? = nil,
         configureChat: ((ChatThread) -> Void)? = nil,
         keychain: MemoryKeychainStore? = nil,
-        githubConnector: GitHubConnector? = nil
+        githubConnector: GitHubConnector? = nil,
+        webSearchConnector: WebSearchConnector? = nil
     ) throws -> Harness {
         let container = try TestModelContainerFactory.makeContainer()
         let context = ModelContext(container)
@@ -942,7 +1013,8 @@ final class ChatViewModelTests: XCTestCase {
             modelContext: context,
             client: client,
             keychain: keychain,
-            githubConnector: githubConnector ?? GitHubConnector(keychain: keychain, session: TestSessionFactory.makeSession())
+            githubConnector: githubConnector ?? GitHubConnector(keychain: keychain, session: TestSessionFactory.makeSession()),
+            webSearchConnector: webSearchConnector ?? WebSearchConnector(session: TestSessionFactory.makeSession())
         )
 
         return Harness(
@@ -1057,6 +1129,14 @@ final class ChatViewModelTests: XCTestCase {
         let body = try XCTUnwrap(request.httpBody)
         let object = try XCTUnwrap(
             JSONSerialization.jsonObject(with: body) as? [String: Any]
+        )
+        return object
+    }
+
+    private func makeJSONObject(from string: String) throws -> [String: Any] {
+        let data = try XCTUnwrap(string.data(using: .utf8))
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
         )
         return object
     }
