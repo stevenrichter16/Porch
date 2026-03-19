@@ -1,11 +1,13 @@
 import Combine
 import Foundation
+import OSLog
 import SwiftData
 
 @MainActor
 final class ChatViewModel: ObservableObject {
     private static let streamingPublishInterval = Duration.milliseconds(50)
-    private static let maxToolCallRounds = 10
+    private static let maxToolCallRounds = 25
+    private static let logger = Logger(subsystem: "steven.Porch", category: "ChatViewModel")
 
     @Published var composerText = ""
     @Published var nextMessageParameterOverride: GenerationParameters?
@@ -27,6 +29,7 @@ final class ChatViewModel: ObservableObject {
     private var streamTask: Task<Void, Never>?
     private var stopRequested = false
     private var pendingGitHubWriteState: PendingGitHubWriteState?
+    private var gitHubToolLoopState = GitHubToolLoopState()
 
     init(
         chat: ChatThread,
@@ -57,6 +60,7 @@ final class ChatViewModel: ObservableObject {
     func sendCurrentInput() {
         let trimmed = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        Self.logger.notice("User submitted chat input (\(trimmed.count, privacy: .public) chars): \(trimmed, privacy: .public)")
         let parameters = nextMessageParameterOverride ?? settings.generationParameters
         nextMessageParameterOverride = nil
         composerText = ""
@@ -157,6 +161,7 @@ final class ChatViewModel: ObservableObject {
         streamingText = ""
         isStreaming = true
         stopRequested = false
+        gitHubToolLoopState.reset()
 
         do {
             let configuration = try currentServerConfiguration()
@@ -178,6 +183,7 @@ final class ChatViewModel: ObservableObject {
 
         while roundsRemaining > 0 {
             roundsRemaining -= 1
+            let roundNumber = Self.maxToolCallRounds - roundsRemaining
 
             do {
                 let outboundMessages = try buildOutboundMessages()
@@ -194,10 +200,16 @@ final class ChatViewModel: ObservableObject {
 
                 switch result {
                 case .textCompleted(let finishReason):
+                    Self.logger.notice("Tool loop completed without more tool calls in round \(roundNumber, privacy: .public). finishReason=\(String(describing: finishReason), privacy: .public)")
                     infoMessage = finishReason?.userMessage
                     return
 
                 case .toolCallsReceived(let toolCalls, let assistantContent):
+                    let toolNames = toolCalls.map(\.function.name).joined(separator: ", ")
+                    Self.logger.notice("Tool loop round \(roundNumber, privacy: .public) received \(toolCalls.count, privacy: .public) tool call(s): \(toolNames, privacy: .public)")
+                    if let assistantContent, !assistantContent.isEmpty {
+                        Self.logger.debug("Assistant included \(assistantContent.count, privacy: .public) characters alongside tool calls in round \(roundNumber, privacy: .public)")
+                    }
                     // Persist the assistant message that requested tool calls
                     persistAssistantToolCallMessage(content: assistantContent, toolCalls: toolCalls)
 
@@ -215,19 +227,23 @@ final class ChatViewModel: ObservableObject {
                     // Continue the loop for another round
 
                 case .cancelled:
+                    Self.logger.notice("Tool loop cancelled in round \(roundNumber, privacy: .public)")
                     return
 
                 case .error(let error):
+                    Self.logger.error("Tool loop failed in round \(roundNumber, privacy: .public): \(error.localizedDescription, privacy: .public)")
                     errorMessage = error.localizedDescription
                     return
                 }
             } catch {
+                Self.logger.error("Failed to build or run tool loop round \(roundNumber, privacy: .public): \(error.localizedDescription, privacy: .public)")
                 errorMessage = error.localizedDescription
                 return
             }
         }
 
         // Safety limit reached
+        Self.logger.warning("Tool loop stopped after reaching max rounds: \(Self.maxToolCallRounds, privacy: .public)")
         infoMessage = "Stopped after \(Self.maxToolCallRounds) tool-calling rounds."
     }
 
@@ -330,7 +346,14 @@ final class ChatViewModel: ObservableObject {
 
         do {
             guard let githubContext = chat.githubContext else {
+                Self.logger.error("GitHub tool \(toolCall.function.name, privacy: .public) was requested without a selected repo context")
                 return "{\"error\":\"GitHub tools require a selected repository and branch in this chat.\"}"
+            }
+
+            Self.logger.notice("Executing GitHub tool \(toolCall.function.name, privacy: .public) for \(githubContext.repositoryLabel, privacy: .public) on branch \(githubContext.branch, privacy: .public)")
+
+            if let advisoryResult = suppressRedundantGitHubToolCallIfNeeded(toolCall, context: githubContext) {
+                return advisoryResult
             }
 
             if githubConnector.isWriteTool(toolCall.function.name) {
@@ -339,34 +362,47 @@ final class ChatViewModel: ObservableObject {
                     arguments: toolCall.function.arguments,
                     context: githubContext
                 )
+                Self.logger.notice("Prepared GitHub write request for \(request.repositoryFullName, privacy: .public) base=\(request.resolvedBaseRef, privacy: .public) proposedBranch=\(request.proposedBranchName, privacy: .public) changeCount=\(request.changes.count, privacy: .public)")
                 switch await waitForGitHubWriteApproval(request: request) {
                 case .approve(let branchName, let commitMessage):
+                    Self.logger.notice("User approved GitHub write for \(request.repositoryFullName, privacy: .public) branch=\(branchName, privacy: .public) commitLength=\(commitMessage.count, privacy: .public)")
                     streamingText = "Creating GitHub branch and pushing changes..."
                     let result = try await githubConnector.executeApprovedWrite(
                         request,
                         branchName: branchName,
                         commitMessage: commitMessage
                     )
+                    Self.logger.notice("GitHub write completed for \(request.repositoryFullName, privacy: .public) branch=\(result.branch_name, privacy: .public) commit=\(result.commit_sha, privacy: .public)")
                     return try encodeToolResult(result)
 
                 case .cancelByUser:
+                    Self.logger.notice("User cancelled GitHub write approval for \(request.repositoryFullName, privacy: .public)")
                     streamingText = ""
                     return try encodeToolResult(
                         GitHubWriteCancelledResult(reason: "User declined GitHub write approval.")
                     )
 
                 case .stopGeneration:
+                    Self.logger.notice("GitHub write approval dismissed because generation was stopped for \(request.repositoryFullName, privacy: .public)")
                     streamingText = ""
                     return nil
                 }
             }
 
-            return try await githubConnector.execute(
+            let result = try await githubConnector.execute(
                 toolName: toolCall.function.name,
                 arguments: toolCall.function.arguments,
                 context: githubContext
             )
+            recordGitHubToolResultIfNeeded(
+                toolName: toolCall.function.name,
+                arguments: toolCall.function.arguments,
+                result: result,
+                context: githubContext
+            )
+            return result
         } catch {
+            Self.logger.error("GitHub tool \(toolCall.function.name, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
             return "{\"error\": \"\(error.localizedDescription)\"}"
         }
     }
@@ -424,17 +460,12 @@ final class ChatViewModel: ObservableObject {
            let ctx = chat.githubContext {
             messages.append(OpenAIChatMessage(
                 role: MessageRole.system.rawValue,
-                content: """
-                You have access to the GitHub repository \(ctx.owner)/\(ctx.repo) (branch: \(ctx.branch)). \
-                To edit an existing file, first read it with github_get_file_content, then call \
-                github_commit_file_changes with operation "update" and the complete new file content. \
-                To add a new file, use operation "create". To remove a file, use operation "delete" with no content. \
-                You can mix create, update, and delete operations in a single commit.
-                """
+                content: gitHubPromptGuidance(for: ctx)
             ))
         }
 
         let persistedMessages = try ChatMessageQueries.fetchSortedMessages(for: chat, in: modelContext)
+        let latestFileReadToolMessageIDs = latestGitHubFileReadToolMessageIDs(in: persistedMessages)
         for message in persistedMessages {
             switch message.role {
             case .assistant where message.finishReason == .toolCalls:
@@ -455,6 +486,10 @@ final class ChatViewModel: ObservableObject {
                 messages.append(msg)
 
             case .tool:
+                if message.toolCallName == "github_get_file_content",
+                   !latestFileReadToolMessageIDs.contains(message.id) {
+                    continue
+                }
                 let msg = OpenAIChatMessage(
                     role: message.role.rawValue,
                     content: message.toolCallResultJSON ?? message.content,
@@ -474,6 +509,219 @@ final class ChatViewModel: ObservableObject {
         }
 
         return messages
+    }
+
+    private func gitHubPromptGuidance(for context: GitHubChatContext) -> String {
+        """
+        GitHub context: \(context.owner)/\(context.repo) on branch \(context.branch). \
+        Use github_get_repo_tree once to discover candidate paths, then reuse that earlier tree result instead of rescanning the same subtree. \
+        Avoid rereading the same file path unless the earlier github_get_file_content result was truncated=true. \
+        Use github_get_file_content before updating an existing file, and switch to github_get_file_tail for large files or edits near the end of a file. \
+        Batch multi-file edits into one github_commit_file_changes call by putting all requested file updates inside changes[].
+        """
+    }
+
+    private func latestGitHubFileReadToolMessageIDs(in messages: [ChatMessage]) -> Set<UUID> {
+        var latestMessageIDsByPath: [String: UUID] = [:]
+
+        for message in messages where message.role == .tool && message.toolCallName == "github_get_file_content" {
+            guard let path = gitHubFileReadPath(from: message) else { continue }
+            latestMessageIDsByPath[path] = message.id
+        }
+
+        return Set(latestMessageIDsByPath.values)
+    }
+
+    private func gitHubFileReadPath(from message: ChatMessage) -> String? {
+        let payload = message.toolCallResultJSON ?? message.content
+        guard let data = payload.data(using: .utf8),
+              let jsonObject = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            return nil
+        }
+
+        return jsonObject["path"] as? String
+    }
+
+    private func suppressRedundantGitHubToolCallIfNeeded(
+        _ toolCall: ToolCall,
+        context: GitHubChatContext
+    ) -> String? {
+        switch toolCall.function.name {
+        case "github_get_repo_tree":
+            guard let queryKey = gitHubRepoTreeQueryKey(
+                from: toolCall.function.arguments,
+                branch: context.branch
+            ) else {
+                return nil
+            }
+            guard gitHubToolLoopState.successfulRepoTreeQueries.contains(queryKey) else {
+                return nil
+            }
+
+            let advisory = GitHubToolAdvisoryResult(
+                tool: toolCall.function.name,
+                reason: "This repository tree query already succeeded earlier in this run.",
+                path_prefix: queryKey.pathPrefix,
+                suggested_next_step: "Reuse the earlier github_get_repo_tree result already in context, then continue with github_get_file_content, github_get_file_tail, or github_commit_file_changes."
+            )
+            Self.logger.notice("Suppressing redundant GitHub repo tree call for \(context.repositoryLabel, privacy: .public) branch=\(context.branch, privacy: .public) prefix=\(queryKey.pathPrefix ?? "/", privacy: .public)")
+            return try? encodeToolResult(advisory)
+
+        case "github_get_file_content":
+            guard let readKey = gitHubFileReadKey(
+                from: toolCall.function.arguments,
+                branch: context.branch
+            ),
+            let priorRead = gitHubToolLoopState.successfulFileReads[readKey] else {
+                return nil
+            }
+
+            let suggestedNextStep: String
+            let reason: String
+            if priorRead.wasTruncated {
+                reason = "This file was already read earlier in this run, and the earlier full-file result was truncated."
+                suggestedNextStep = "Use github_get_file_tail for this path to inspect the end of the file before appending or editing near the bottom."
+            } else {
+                reason = "This file was already read earlier in this run."
+                suggestedNextStep = "Reuse the earlier github_get_file_content result already in context instead of rereading the same path."
+            }
+
+            let advisory = GitHubToolAdvisoryResult(
+                tool: toolCall.function.name,
+                reason: reason,
+                path: readKey.path,
+                suggested_next_step: suggestedNextStep
+            )
+            Self.logger.notice("Suppressing redundant GitHub file read for \(context.repositoryLabel, privacy: .public) branch=\(context.branch, privacy: .public) path=\(readKey.path, privacy: .public) truncated=\(priorRead.wasTruncated, privacy: .public)")
+            return try? encodeToolResult(advisory)
+
+        default:
+            return nil
+        }
+    }
+
+    private func recordGitHubToolResultIfNeeded(
+        toolName: String,
+        arguments: String,
+        result: String,
+        context: GitHubChatContext
+    ) {
+        guard let payload = makeJSONObject(from: result) else {
+            return
+        }
+        guard payload["error"] == nil else {
+            return
+        }
+
+        switch toolName {
+        case "github_get_repo_tree":
+            guard let queryKey = gitHubRepoTreeQueryKey(from: arguments, branch: context.branch) else {
+                return
+            }
+            gitHubToolLoopState.successfulRepoTreeQueries.insert(queryKey)
+
+        case "github_get_file_content":
+            guard let path = payload["path"] as? String else {
+                return
+            }
+            let readKey = GitHubFileReadKey(branch: context.branch, path: path)
+            let wasTruncated = gitHubToolResultTruncated(payload)
+            gitHubToolLoopState.successfulFileReads[readKey] = GitHubFileReadState(wasTruncated: wasTruncated)
+
+        default:
+            break
+        }
+    }
+
+    private func gitHubRepoTreeQueryKey(from arguments: String, branch: String) -> GitHubRepoTreeQueryKey? {
+        guard let payload = makeJSONObject(from: arguments) else {
+            return nil
+        }
+
+        let normalizedPrefix = normalizeGitHubTreePathPrefix(payload["path_prefix"] as? String)
+        let entryType: String
+        if let rawEntryType = payload["entry_type"] as? String {
+            let normalizedEntryType = rawEntryType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard ["all", "files", "directories"].contains(normalizedEntryType) else {
+                return nil
+            }
+            entryType = normalizedEntryType
+        } else {
+            entryType = "all"
+        }
+
+        let maxEntries = payload["max_entries"] as? Int ?? 400
+        guard maxEntries > 0, maxEntries <= 1_000 else {
+            return nil
+        }
+
+        return GitHubRepoTreeQueryKey(
+            branch: branch,
+            pathPrefix: normalizedPrefix,
+            entryType: entryType,
+            maxEntries: maxEntries
+        )
+    }
+
+    private func gitHubFileReadKey(from arguments: String, branch: String) -> GitHubFileReadKey? {
+        guard let payload = makeJSONObject(from: arguments),
+              let rawPath = payload["path"] as? String
+        else {
+            return nil
+        }
+
+        let normalizedPath = rawPath
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard !normalizedPath.isEmpty else {
+            return nil
+        }
+
+        return GitHubFileReadKey(branch: branch, path: normalizedPath)
+    }
+
+    private func normalizeGitHubTreePathPrefix(_ rawPrefix: String?) -> String? {
+        guard let rawPrefix else { return nil }
+
+        let trimmed = rawPrefix.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        let normalized = trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard !normalized.isEmpty else { return nil }
+
+        let components = normalized
+            .split(separator: "/", omittingEmptySubsequences: true)
+            .map(String.init)
+        guard !components.isEmpty else {
+            return nil
+        }
+        guard !components.contains("."),
+              !components.contains(".."),
+              !components.contains(".git") else {
+            return nil
+        }
+
+        return components.joined(separator: "/")
+    }
+
+    private func gitHubToolResultTruncated(_ payload: [String: Any]) -> Bool {
+        if let value = payload["truncated"] as? Bool {
+            return value
+        }
+        if let value = payload["truncated"] as? String {
+            return value == "true"
+        }
+        return false
+    }
+
+    private func makeJSONObject(from string: String) -> [String: Any]? {
+        guard let data = string.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            return nil
+        }
+        return object
     }
 
     private func publishStreamingDraftIfNeeded(
@@ -531,6 +779,7 @@ final class ChatViewModel: ObservableObject {
             "github_get_repo_tree": "GitHub Repo Tree",
             "github_get_repo_contents": "GitHub Browse Files",
             "github_get_file_content": "GitHub Read File",
+            "github_get_file_tail": "GitHub Read File Tail",
             "github_list_issues": "GitHub Issues",
             "github_get_issue": "GitHub Issue",
             "github_list_pull_requests": "GitHub Pull Requests",
@@ -547,10 +796,12 @@ final class ChatViewModel: ObservableObject {
 
     private func waitForGitHubWriteApproval(request: GitHubWriteRequest) async -> GitHubWriteApprovalDecision {
         if stopRequested {
+            Self.logger.notice("Skipping GitHub write approval because generation is already stopping for \(request.repositoryFullName, privacy: .public)")
             return .stopGeneration
         }
 
         let approval = PendingGitHubWriteApproval(request: request)
+        Self.logger.notice("Presenting GitHub write approval for \(approval.repositoryFullName, privacy: .public) base=\(approval.resolvedBaseRef, privacy: .public) proposedBranch=\(approval.proposedBranchName, privacy: .public) created=\(approval.createdCount, privacy: .public) updated=\(approval.updatedCount, privacy: .public) deleted=\(approval.deletedCount, privacy: .public)")
         pendingGitHubWriteApproval = approval
         streamingText = "Awaiting approval for GitHub changes..."
 
@@ -564,6 +815,16 @@ final class ChatViewModel: ObservableObject {
 
     private func resolvePendingGitHubWriteApproval(with decision: GitHubWriteApprovalDecision) {
         guard let pendingState = pendingGitHubWriteState else { return }
+        let decisionLabel: String
+        switch decision {
+        case .approve(let branchName, _):
+            decisionLabel = "approve(\(branchName))"
+        case .cancelByUser:
+            decisionLabel = "cancelByUser"
+        case .stopGeneration:
+            decisionLabel = "stopGeneration"
+        }
+        Self.logger.notice("Resolving GitHub write approval \(pendingState.approvalID.uuidString, privacy: .public) with decision \(decisionLabel, privacy: .public)")
         pendingGitHubWriteState = nil
         pendingGitHubWriteApproval = nil
         pendingState.continuation.resume(returning: decision)
@@ -578,5 +839,40 @@ final class ChatViewModel: ObservableObject {
         case approve(branchName: String, commitMessage: String)
         case cancelByUser
         case stopGeneration
+    }
+
+    private struct GitHubToolLoopState {
+        var successfulRepoTreeQueries: Set<GitHubRepoTreeQueryKey> = []
+        var successfulFileReads: [GitHubFileReadKey: GitHubFileReadState] = [:]
+
+        mutating func reset() {
+            successfulRepoTreeQueries.removeAll(keepingCapacity: false)
+            successfulFileReads.removeAll(keepingCapacity: false)
+        }
+    }
+
+    private struct GitHubRepoTreeQueryKey: Hashable {
+        var branch: String
+        var pathPrefix: String?
+        var entryType: String
+        var maxEntries: Int
+    }
+
+    private struct GitHubFileReadKey: Hashable {
+        var branch: String
+        var path: String
+    }
+
+    private struct GitHubFileReadState {
+        var wasTruncated: Bool
+    }
+
+    private struct GitHubToolAdvisoryResult: Encodable {
+        var status: String = "redundant_call"
+        var tool: String
+        var reason: String
+        var path: String?
+        var path_prefix: String?
+        var suggested_next_step: String
     }
 }
