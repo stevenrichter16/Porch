@@ -116,17 +116,18 @@ actor OpenAICompatibleClient {
                     // Accumulate tool call deltas
                     if let toolCallDeltas = chunk.choices.first?.delta.tool_calls {
                         for delta in toolCallDeltas {
-                            if let existingEntry = toolCallAccumulator[delta.index] {
+                            let idx = delta.index ?? 0
+                            if let existingEntry = toolCallAccumulator[idx] {
                                 // Append arguments fragment
                                 let appendedArgs = existingEntry.arguments + (delta.function?.arguments ?? "")
-                                toolCallAccumulator[delta.index] = (
+                                toolCallAccumulator[idx] = (
                                     id: existingEntry.id,
                                     name: existingEntry.name,
                                     arguments: appendedArgs
                                 )
                             } else {
                                 // First delta for this index
-                                toolCallAccumulator[delta.index] = (
+                                toolCallAccumulator[idx] = (
                                     id: delta.id ?? "",
                                     name: delta.function?.name ?? "",
                                     arguments: delta.function?.arguments ?? ""
@@ -169,8 +170,11 @@ actor OpenAICompatibleClient {
     private func assembleToolCalls(from accumulator: [Int: (id: String, name: String, arguments: String)]) -> [ToolCall] {
         accumulator
             .sorted { $0.key < $1.key }
-            .map { _, entry in
-                ToolCall(id: entry.id, function: FunctionCall(name: entry.name, arguments: entry.arguments))
+            .compactMap { _, entry in
+                // Filter out entries with empty names — these are malformed and will fail execution
+                guard !entry.name.isEmpty else { return nil }
+                let id = entry.id.isEmpty ? "call_\(UUID().uuidString.prefix(8))" : entry.id
+                return ToolCall(id: id, function: FunctionCall(name: entry.name, arguments: entry.arguments))
             }
     }
 

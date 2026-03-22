@@ -194,7 +194,13 @@ final class ChatViewModel: ObservableObject {
 
                 switch result {
                 case .textCompleted(let finishReason):
-                    infoMessage = finishReason?.userMessage
+                    // If tools were available but the model didn't use them, warn the user
+                    if tools != nil && roundsRemaining == Self.maxToolCallRounds - 1
+                        && settings.toolCallingMode == .native {
+                        infoMessage = "This model may not support tool calling. Try switching to Auto or Prompt-Based mode in Settings > Connectors."
+                    } else {
+                        infoMessage = finishReason?.userMessage
+                    }
                     return
 
                 case .toolCallsReceived(let toolCalls, let assistantContent):
@@ -270,11 +276,29 @@ final class ChatViewModel: ObservableObject {
                 return .cancelled
             }
 
-            // If we received tool calls, return them for the loop to handle
+            // If we received structured tool calls, return them for the loop to handle
             if let toolCalls = receivedToolCalls, !toolCalls.isEmpty {
                 let content = draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : draftText
                 streamingText = ""
                 return .toolCallsReceived(toolCalls, assistantContent: content)
+            }
+
+            // Fallback: try parsing tool calls from text output (for prompt-based/auto modes)
+            let mode = settings.toolCallingMode
+            if (mode == .promptBased || mode == .auto),
+               !draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                let parseResult = TextToolCallParser.parse(draftText)
+                if !parseResult.toolCalls.isEmpty {
+                    let synthesized = parseResult.toolCalls.map { parsed in
+                        ToolCall(
+                            id: "text_\(UUID().uuidString.prefix(8))",
+                            function: FunctionCall(name: parsed.name, arguments: parsed.arguments)
+                        )
+                    }
+                    let remaining = parseResult.remainingText.isEmpty ? nil : parseResult.remainingText
+                    streamingText = ""
+                    return .toolCallsReceived(synthesized, assistantContent: remaining)
+                }
             }
 
             // Normal text completion
@@ -299,7 +323,9 @@ final class ChatViewModel: ObservableObject {
         }
     }
 
-    private func resolveToolDefinitions() -> [ToolDefinition]? {
+    /// Returns the full list of available tool definitions regardless of mode.
+    /// Used for both API requests (native/auto) and prompt building (promptBased/auto).
+    private func allToolDefinitions() -> [ToolDefinition] {
         var tools: [ToolDefinition] = []
 
         if settings.isWebSearchConnectorEnabled, webSearchConnector.isConfigured {
@@ -312,7 +338,21 @@ final class ChatViewModel: ObservableObject {
             tools.append(contentsOf: githubConnector.toolDefinitions(for: githubContext))
         }
 
-        return tools.isEmpty ? nil : tools
+        return tools
+    }
+
+    /// Returns tool definitions to send in the API request's `tools` field.
+    /// In promptBased mode, returns nil (tools are taught via system prompt instead).
+    private func resolveToolDefinitions() -> [ToolDefinition]? {
+        let tools = allToolDefinitions()
+        guard !tools.isEmpty else { return nil }
+
+        switch settings.toolCallingMode {
+        case .native, .auto:
+            return tools
+        case .promptBased:
+            return nil
+        }
     }
 
     private func executeToolCall(_ toolCall: ToolCall) async -> String? {
@@ -419,9 +459,23 @@ final class ChatViewModel: ObservableObject {
             messages.append(OpenAIChatMessage(role: MessageRole.system.rawValue, content: chat.systemPrompt))
         }
 
-        if settings.isGitHubConnectorEnabled,
-           githubConnector.isConfigured,
-           let ctx = chat.githubContext {
+        let tools = allToolDefinitions()
+        let mode = settings.toolCallingMode
+        let githubCtx = (settings.isGitHubConnectorEnabled && githubConnector.isConfigured)
+            ? chat.githubContext : nil
+
+        if !tools.isEmpty && (mode == .promptBased || mode == .auto) {
+            // Teach the model how to call tools via text output
+            let toolPrompt = ToolCallingPromptBuilder.buildPrompt(
+                tools: tools,
+                githubContext: githubCtx
+            )
+            messages.append(OpenAIChatMessage(
+                role: MessageRole.system.rawValue,
+                content: toolPrompt
+            ))
+        } else if let ctx = githubCtx, !tools.isEmpty {
+            // Native mode: just inject the GitHub context hint (no full tool teaching)
             messages.append(OpenAIChatMessage(
                 role: MessageRole.system.rawValue,
                 content: """

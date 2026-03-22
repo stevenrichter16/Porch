@@ -102,6 +102,26 @@ struct SettingsView: View {
                 )) {
                     Label("Web Search", systemImage: "globe")
                 }
+
+                Picker(selection: Binding(
+                    get: { settings.toolCallingMode },
+                    set: { newValue in
+                        settings.toolCallingMode = newValue
+                        settings.markUpdated()
+                    }
+                )) {
+                    ForEach(ToolCallingMode.allCases, id: \.rawValue) { mode in
+                        VStack(alignment: .leading) {
+                            Text(mode.displayName)
+                            Text(mode.subtitle)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        .tag(mode)
+                    }
+                } label: {
+                    Label("Tool Calling", systemImage: "wrench.and.screwdriver")
+                }
             }
 
             Section("Generation") {

@@ -7,7 +7,8 @@ enum PorchMigrationPlan: SchemaMigrationPlan {
             PorchSchemaV2.self,
             PorchSchemaV3.self,
             PorchSchemaV4.self,
-            PorchSchemaV5.self
+            PorchSchemaV5.self,
+            PorchSchemaV6.self
         ]
     }
 
@@ -16,7 +17,8 @@ enum PorchMigrationPlan: SchemaMigrationPlan {
             migrateV1ToV2,
             migrateV2ToV3,
             migrateV3ToV4,
-            migrateV4ToV5
+            migrateV4ToV5,
+            migrateV5ToV6
         ]
     }
 
@@ -55,6 +57,23 @@ enum PorchMigrationPlan: SchemaMigrationPlan {
             let settingsRecords = try context.fetch(FetchDescriptor<PorchSchemaV5.AppSettings>())
             for settings in settingsRecords {
                 settings.isWebSearchConnectorEnabled = false
+                settings.markUpdated()
+            }
+
+            if !settingsRecords.isEmpty {
+                try context.save()
+            }
+        }
+    )
+
+    static let migrateV5ToV6 = MigrationStage.custom(
+        fromVersion: PorchSchemaV5.self,
+        toVersion: PorchSchemaV6.self,
+        willMigrate: { _ in },
+        didMigrate: { context in
+            let settingsRecords = try context.fetch(FetchDescriptor<PorchSchemaV6.AppSettings>())
+            for settings in settingsRecords {
+                settings.toolCallingModeRaw = ToolCallingMode.auto.rawValue
                 settings.markUpdated()
             }
 

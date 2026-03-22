@@ -129,81 +129,59 @@ final class OpenAICompatibleClientTests: XCTestCase {
         ])
     }
 
-    func testStreamCompletionFallsBackToNonStreamingBeforeFirstToken() async throws {
+    func testStreamCompletionToleratesMalformedChunksBeforeFirstToken() async throws {
         MockURLProtocol.setRequestHandler { request in
-            let body = try self.decodeJSONBody(from: request)
-            let isStreaming = body["stream"] as? Bool ?? false
-
-            if isStreaming {
-                return .stream(bodyChunks: [
-                    Data("data: {bad json}\n".utf8)
-                ])
-            }
-
-            return .data(body: try self.makeNonStreamingResponse(content: "Fallback reply", finishReason: "stop"))
+            .stream(bodyChunks: [
+                Data("data: {bad json}\n".utf8),
+                try self.makeSSEChunk(content: "Recovery", finishReason: nil),
+                try self.makeSSEChunk(content: nil, finishReason: "stop"),
+                Data("data: [DONE]\n".utf8)
+            ])
         }
 
         let events = try await collectEvents(from: await makeClient().streamCompletion(request: makeDescriptor()))
 
+        // Malformed chunk is silently skipped, valid chunks still processed
         XCTAssertEqual(events, [
-            .token("Fallback reply"),
+            .token("Recovery"),
             .completed(.stop)
         ])
-        XCTAssertEqual(MockURLProtocol.capturedRequests.count, 2)
-        XCTAssertEqual(try streamFlag(from: MockURLProtocol.capturedRequests[0]), true)
-        XCTAssertEqual(try streamFlag(from: MockURLProtocol.capturedRequests[1]), false)
+        // Only one request — no fallback needed
+        XCTAssertEqual(MockURLProtocol.capturedRequests.count, 1)
     }
 
-    func testStreamCompletionDoesNotFallbackAfterFirstToken() async {
+    func testStreamCompletionToleratesMalformedChunkAfterFirstToken() async throws {
         MockURLProtocol.setRequestHandler { _ in
             .stream(bodyChunks: [
                 try self.makeSSEChunk(content: "Partial", finishReason: nil),
-                Data("data: {bad json}\n".utf8)
+                Data("data: {bad json}\n".utf8),
+                try self.makeSSEChunk(content: " text", finishReason: nil),
+                try self.makeSSEChunk(content: nil, finishReason: "stop"),
+                Data("data: [DONE]\n".utf8)
             ])
         }
 
-        var receivedEvents: [ChatStreamEvent] = []
+        let events = try await collectEvents(from: await makeClient().streamCompletion(request: makeDescriptor()))
 
-        do {
-            let stream = await makeClient().streamCompletion(request: makeDescriptor())
-            for try await event in stream {
-                receivedEvents.append(event)
-            }
-            XCTFail("Expected malformedStream error.")
-        } catch let error as StreamError {
-            switch error {
-            case .malformedStream:
-                XCTAssertEqual(receivedEvents, [.token("Partial")])
-                XCTAssertEqual(MockURLProtocol.capturedRequests.count, 1)
-            default:
-                XCTFail("Unexpected stream error: \(error)")
-            }
-        } catch {
-            XCTFail("Unexpected error: \(error)")
-        }
+        // Malformed chunk is silently skipped, stream continues
+        XCTAssertEqual(events, [
+            .token("Partial"),
+            .token(" text"),
+            .completed(.stop)
+        ])
+        XCTAssertEqual(MockURLProtocol.capturedRequests.count, 1)
     }
 
-    func testStreamCompletionThrowsEmptyResponseWhenFallbackBodyIsBlank() async {
-        MockURLProtocol.setRequestHandler { request in
-            let isStreaming = try self.streamFlag(from: request)
-            if isStreaming {
-                return .stream(bodyChunks: [Data("data: {bad json}\n".utf8)])
-            }
-
-            return .data(body: try self.makeNonStreamingResponse(content: "   ", finishReason: "stop"))
+    func testStreamCompletionCompletesNormallyWhenOnlyMalformedChunks() async throws {
+        MockURLProtocol.setRequestHandler { _ in
+            .stream(bodyChunks: [Data("data: {bad json}\n".utf8)])
         }
 
-        do {
-            let stream = await makeClient().streamCompletion(request: makeDescriptor())
-            for try await _ in stream {
-            }
-            XCTFail("Expected emptyResponse error.")
-        } catch let error as StreamError {
-            XCTAssertEqual(error, .emptyResponse)
-            XCTAssertEqual(MockURLProtocol.capturedRequests.count, 2)
-        } catch {
-            XCTFail("Unexpected error: \(error)")
-        }
+        let events = try await collectEvents(from: await makeClient().streamCompletion(request: makeDescriptor()))
+
+        // Malformed chunks are silently ignored; stream completes with no content
+        XCTAssertEqual(events, [.completed(nil)])
+        XCTAssertEqual(MockURLProtocol.capturedRequests.count, 1)
     }
 
     private func makeClient() -> OpenAICompatibleClient {

@@ -27,13 +27,15 @@ struct SSEParser {
         }
 
         guard let data = payload.data(using: .utf8) else {
-            throw StreamError.malformedStream("Unable to decode streamed payload.")
+            return .ignore
         }
 
         do {
             return .chunk(try decoder.decode(ChatCompletionChunk.self, from: data))
         } catch {
-            throw StreamError.malformedStream("Invalid SSE JSON chunk: \(error.localizedDescription)")
+            // Tolerate malformed chunks (e.g., from local LLM servers with non-standard
+            // streaming formats) instead of aborting the entire stream.
+            return .ignore
         }
     }
 }
