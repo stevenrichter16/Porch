@@ -175,13 +175,15 @@ final class ChatViewModel: ObservableObject {
 
     private func runToolCallingLoop(configuration: ServerConfiguration, parameters: GenerationParameters) async {
         var roundsRemaining = Self.maxToolCallRounds
+        var isFirstRound = true
 
         while roundsRemaining > 0 {
             roundsRemaining -= 1
 
             do {
-                let outboundMessages = try buildOutboundMessages()
-                let tools = resolveToolDefinitions()
+                let availableTools = allToolDefinitions()
+                let outboundMessages = try buildOutboundMessages(tools: availableTools)
+                let tools = resolveToolDefinitions(from: availableTools)
                 let descriptor = OpenAIChatRequestDescriptor(
                     configuration: configuration,
                     modelID: chat.modelID,
@@ -194,9 +196,7 @@ final class ChatViewModel: ObservableObject {
 
                 switch result {
                 case .textCompleted(let finishReason):
-                    // If tools were available but the model didn't use them, warn the user
-                    if tools != nil && roundsRemaining == Self.maxToolCallRounds - 1
-                        && settings.toolCallingMode == .native {
+                    if tools != nil && isFirstRound && settings.toolCallingMode == .native {
                         infoMessage = "This model may not support tool calling. Try switching to Auto or Prompt-Based mode in Settings > Connectors."
                     } else {
                         infoMessage = finishReason?.userMessage
@@ -204,10 +204,8 @@ final class ChatViewModel: ObservableObject {
                     return
 
                 case .toolCallsReceived(let toolCalls, let assistantContent):
-                    // Persist the assistant message that requested tool calls
                     persistAssistantToolCallMessage(content: assistantContent, toolCalls: toolCalls)
 
-                    // Execute each tool call and persist results
                     for toolCall in toolCalls {
                         if stopRequested { return }
                         streamingText = "Calling \(humanReadableToolName(toolCall.function.name))..."
@@ -218,7 +216,6 @@ final class ChatViewModel: ObservableObject {
                         persistToolResultMessage(toolCall: toolCall, result: result)
                     }
                     streamingText = ""
-                    // Continue the loop for another round
 
                 case .cancelled:
                     return
@@ -231,6 +228,8 @@ final class ChatViewModel: ObservableObject {
                 errorMessage = error.localizedDescription
                 return
             }
+
+            isFirstRound = false
         }
 
         // Safety limit reached
@@ -343,8 +342,7 @@ final class ChatViewModel: ObservableObject {
 
     /// Returns tool definitions to send in the API request's `tools` field.
     /// In promptBased mode, returns nil (tools are taught via system prompt instead).
-    private func resolveToolDefinitions() -> [ToolDefinition]? {
-        let tools = allToolDefinitions()
+    private func resolveToolDefinitions(from tools: [ToolDefinition]) -> [ToolDefinition]? {
         guard !tools.isEmpty else { return nil }
 
         switch settings.toolCallingMode {
@@ -453,13 +451,12 @@ final class ChatViewModel: ObservableObject {
         )
     }
 
-    private func buildOutboundMessages() throws -> [OpenAIChatMessage] {
+    private func buildOutboundMessages(tools: [ToolDefinition]) throws -> [OpenAIChatMessage] {
         var messages: [OpenAIChatMessage] = []
         if !chat.systemPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             messages.append(OpenAIChatMessage(role: MessageRole.system.rawValue, content: chat.systemPrompt))
         }
 
-        let tools = allToolDefinitions()
         let mode = settings.toolCallingMode
         let githubCtx = (settings.isGitHubConnectorEnabled && githubConnector.isConfigured)
             ? chat.githubContext : nil
@@ -475,16 +472,9 @@ final class ChatViewModel: ObservableObject {
                 content: toolPrompt
             ))
         } else if let ctx = githubCtx, !tools.isEmpty {
-            // Native mode: just inject the GitHub context hint (no full tool teaching)
             messages.append(OpenAIChatMessage(
                 role: MessageRole.system.rawValue,
-                content: """
-                You have access to the GitHub repository \(ctx.owner)/\(ctx.repo) (branch: \(ctx.branch)). \
-                To edit an existing file, first read it with github_get_file_content, then call \
-                github_commit_file_changes with operation "update" and the complete new file content. \
-                To add a new file, use operation "create". To remove a file, use operation "delete" with no content. \
-                You can mix create, update, and delete operations in a single commit.
-                """
+                content: ToolCallingPromptBuilder.githubWorkflowInstructions(for: ctx)
             ))
         }
 

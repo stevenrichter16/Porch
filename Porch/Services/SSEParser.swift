@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 enum SSELineParseResult {
     case chunk(ChatCompletionChunk)
@@ -7,6 +8,7 @@ enum SSELineParseResult {
 }
 
 struct SSEParser {
+    private static let logger = Logger(subsystem: "com.porch.app", category: "SSEParser")
     private let decoder = JSONDecoder()
 
     func parse(line: String) throws -> SSELineParseResult {
@@ -33,8 +35,7 @@ struct SSEParser {
         do {
             return .chunk(try decoder.decode(ChatCompletionChunk.self, from: data))
         } catch {
-            // Tolerate malformed chunks (e.g., from local LLM servers with non-standard
-            // streaming formats) instead of aborting the entire stream.
+            Self.logger.debug("Skipping malformed SSE chunk: \(error.localizedDescription, privacy: .public)")
             return .ignore
         }
     }

@@ -40,20 +40,25 @@ enum ToolCallingPromptBuilder {
         }
         sections.append("Available tools:\n" + toolDescriptions.joined(separator: "\n"))
 
-        // GitHub-specific workflow
         if let ctx = githubContext {
-            sections.append("""
-            You are connected to the GitHub repository \(ctx.owner)/\(ctx.repo) (branch: \(ctx.branch)).
-            To edit an existing file: first read it with github_get_file_content, then call \
-            github_commit_file_changes with operation "update" and the complete new file content.
-            To add a new file, use operation "create". To remove a file, use operation "delete" with no content.
-            """)
+            sections.append(githubWorkflowInstructions(for: ctx))
         }
 
         // Worked example
         sections.append(buildWorkedExample(githubContext: githubContext))
 
         return sections.joined(separator: "\n\n")
+    }
+
+    /// GitHub workflow instructions shared between prompt-based and native tool calling modes.
+    static func githubWorkflowInstructions(for ctx: GitHubChatContext) -> String {
+        """
+        You have access to the GitHub repository \(ctx.owner)/\(ctx.repo) (branch: \(ctx.branch)). \
+        To edit an existing file, first read it with github_get_file_content, then call \
+        github_commit_file_changes with operation "update" and the complete new file content. \
+        To add a new file, use operation "create". To remove a file, use operation "delete" with no content. \
+        You can mix create, update, and delete operations in a single commit.
+        """
     }
 
     // MARK: - Private
