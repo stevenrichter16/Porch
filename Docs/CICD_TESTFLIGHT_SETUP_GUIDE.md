@@ -1,6 +1,8 @@
 # Porch: Automated CI/CD to TestFlight Setup Guide
 
-This guide walks you through setting up a fully automated pipeline so that every code push to a designated branch builds your app and deploys it to TestFlight — no manual Xcode archiving required.
+This guide walks you through setting up a fully automated pipeline so that every code push to a designated branch builds your app on your MacBook Pro and deploys it to TestFlight — no manual Xcode archiving required.
+
+Your MacBook Pro M5 (32GB RAM) serves as a self-hosted GitHub Actions runner. This is faster and cheaper than GitHub's hosted macOS runners, uses your exact Xcode version, and keeps dependency caches warm between builds.
 
 **Your project details (referenced throughout):**
 
@@ -12,6 +14,7 @@ This guide walks you through setting up a fully automated pipeline so that every
 | Xcode version | 26.1.1 |
 | iOS deployment target | 26.1 |
 | GitHub repo | `stevenrichter16/Porch` |
+| Build machine | MacBook Pro M5 (32GB RAM) |
 
 ---
 
@@ -25,12 +28,13 @@ This guide walks you through setting up a fully automated pipeline so that every
 6. [Set Up Fastlane Match (Code Signing)](#6-set-up-fastlane-match-code-signing)
 7. [Create the Fastlane Deploy Lane](#7-create-the-fastlane-deploy-lane)
 8. [Test Locally (Optional but Recommended)](#8-test-locally-optional-but-recommended)
-9. [Set Up GitHub Actions](#9-set-up-github-actions)
-10. [Configure GitHub Secrets](#10-configure-github-secrets)
-11. [TestFlight: Adding Yourself as a Tester](#11-testflight-adding-yourself-as-a-tester)
-12. [Trigger Your First Automated Build](#12-trigger-your-first-automated-build)
-13. [Installing the Build on Your Phone](#13-installing-the-build-on-your-phone)
-14. [Speeding Up Iteration](#14-speeding-up-iteration)
+9. [Set Up Your MacBook as a Self-Hosted Runner](#9-set-up-your-macbook-as-a-self-hosted-runner)
+10. [Set Up GitHub Actions Workflow](#10-set-up-github-actions-workflow)
+11. [Configure GitHub Secrets](#11-configure-github-secrets)
+12. [TestFlight: Adding Yourself as a Tester](#12-testflight-adding-yourself-as-a-tester)
+13. [Trigger Your First Automated Build](#13-trigger-your-first-automated-build)
+14. [Installing the Build on Your Phone](#14-installing-the-build-on-your-phone)
+15. [Speeding Up Iteration](#15-speeding-up-iteration)
 
 ---
 
@@ -39,10 +43,11 @@ This guide walks you through setting up a fully automated pipeline so that every
 Before starting, make sure you have:
 
 - [ ] An **Apple Developer Program** membership ($99/year) — you already have Team ID `77F3383U2A`, so this should be active
-- [ ] **Xcode** installed on your Mac (for initial Fastlane Match setup)
+- [ ] **Xcode 26.1.1** installed on your MacBook Pro M5
 - [ ] **Homebrew** installed (`/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"`)
 - [ ] A **GitHub account** with your Porch repo (`stevenrichter16/Porch`)
 - [ ] An **iPhone or iPad** with iOS 16+ for testing via TestFlight
+- [ ] Your **MacBook Pro M5** available to act as a build runner (must be awake and on network when builds trigger)
 
 ---
 
@@ -292,9 +297,91 @@ If successful, you'll see a build appear in App Store Connect → TestFlight wit
 
 ---
 
-## 9. Set Up GitHub Actions
+## 9. Set Up Your MacBook as a Self-Hosted Runner
 
-Create the workflow file that runs on every push:
+Your MacBook Pro M5 will run builds locally whenever code is pushed. This is significantly faster than GitHub's hosted runners (~2-5 min builds vs ~15 min), uses your exact Xcode version, and costs nothing.
+
+### 9a. Register the runner with GitHub
+
+1. Go to your GitHub repo → **Settings** → **Actions** → **Runners**
+2. Click **New self-hosted runner**
+3. Select **macOS** and **ARM64**
+4. GitHub will show you a set of commands. Run them in Terminal on your MacBook:
+
+```bash
+# Create a directory for the runner
+mkdir -p ~/actions-runner && cd ~/actions-runner
+
+# Download the runner (GitHub will show you the exact URL — use that one)
+curl -o actions-runner-osx-arm64.tar.gz -L https://github.com/actions/runner/releases/download/v2.321.0/actions-runner-osx-arm64-2.321.0.tar.gz
+
+# Extract
+tar xzf actions-runner-osx-arm64.tar.gz
+
+# Configure — GitHub will give you the exact token
+./config.sh --url https://github.com/stevenrichter16/Porch --token YOUR_TOKEN_HERE
+```
+
+When prompted during configuration:
+- **Runner group:** Press Enter for default
+- **Runner name:** `macbook-m5` (or whatever you want)
+- **Labels:** Press Enter for default (adds `self-hosted`, `macOS`, `ARM64`)
+- **Work folder:** Press Enter for default (`_work`)
+
+### 9b. Install as a background service (recommended)
+
+This makes the runner start automatically on boot and survive terminal closures:
+
+```bash
+cd ~/actions-runner
+
+# Install the service (requires admin password)
+sudo ./svc.sh install
+
+# Start the service
+sudo ./svc.sh start
+
+# Check status
+sudo ./svc.sh status
+```
+
+The runner is now running as a launch daemon. It will start automatically when your Mac boots.
+
+**To manage the service later:**
+
+```bash
+cd ~/actions-runner
+sudo ./svc.sh stop     # Stop the runner
+sudo ./svc.sh start    # Start the runner
+sudo ./svc.sh status   # Check if running
+sudo ./svc.sh uninstall # Remove the service
+```
+
+### 9c. Prevent your Mac from sleeping during builds
+
+By default, macOS sleeps after a period of inactivity, which will cause queued builds to stall.
+
+```bash
+# Prevent sleep when connected to power (recommended)
+sudo pmset -c sleep 0 disksleep 0
+
+# Verify the setting
+pmset -g | grep sleep
+```
+
+> **If you don't want to disable sleep entirely:** You can skip this and just make sure your Mac is awake when you push code. Builds will queue and run when the Mac wakes up.
+
+### 9d. Verify the runner is connected
+
+1. Go to GitHub repo → **Settings** → **Actions** → **Runners**
+2. You should see `macbook-m5` with a green **Idle** status
+3. If it shows **Offline**, check that the service is running (`sudo ./svc.sh status`)
+
+---
+
+## 10. Set Up GitHub Actions Workflow
+
+Now create the workflow file that triggers builds on your self-hosted runner.
 
 ```bash
 mkdir -p .github/workflows
@@ -310,7 +397,7 @@ on:
     branches:
       - main
       - 'release/*'
-  workflow_dispatch:  # Allows manual triggering from GitHub UI
+  workflow_dispatch:  # Allows manual triggering from GitHub UI or CLI
 
 concurrency:
   group: testflight-${{ github.ref }}
@@ -318,7 +405,7 @@ concurrency:
 
 jobs:
   deploy:
-    runs-on: macos-15  # Required for Xcode 16+
+    runs-on: self-hosted  # Runs on your MacBook Pro M5
     timeout-minutes: 30
 
     steps:
@@ -327,12 +414,6 @@ jobs:
 
       - name: Select Xcode version
         run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
-
-      - name: Install Ruby and Bundler
-        uses: ruby/setup-ruby@v1
-        with:
-          ruby-version: '3.2'
-          bundler-cache: true
 
       - name: Install Fastlane dependencies
         run: bundle install
@@ -346,22 +427,17 @@ jobs:
           MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
           MATCH_GIT_BASIC_AUTHORIZATION: ${{ secrets.MATCH_GIT_BASIC_AUTHORIZATION }}
         run: bundle exec fastlane beta
-
-      - name: Upload build logs on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-logs
-          path: |
-            ~/Library/Logs/gym/*.log
-            fastlane/report.xml
 ```
 
-> **Note on Xcode version:** The `macos-15` runner comes with Xcode 16.x pre-installed. If your project requires Xcode 26.1.1 (as specified in your project), you may need to wait for GitHub to offer that runner, or use a self-hosted runner or Codemagic. For now, you may need to adjust your deployment target to what's available on CI.
+**Why this is simpler than hosted runners:**
+- No `ruby/setup-ruby` step needed — your Mac already has Ruby via Homebrew
+- No SPM cache step needed — your Mac keeps `DerivedData` warm between builds
+- Your exact Xcode version is used (no version mismatch issues)
+- Builds take ~2-5 minutes instead of ~15 minutes
 
 ---
 
-## 10. Configure GitHub Secrets
+## 11. Configure GitHub Secrets
 
 Go to your GitHub repo → **Settings** → **Secrets and variables** → **Actions** → **New repository secret**
 
@@ -395,9 +471,11 @@ echo -n "stevenrichter16:YOUR_GITHUB_PAT_HERE" | base64
 
 Paste the output as the `MATCH_GIT_BASIC_AUTHORIZATION` secret.
 
+> **Self-hosted runner note:** GitHub Actions secrets are passed as environment variables to your MacBook during the build. They are not stored on disk permanently, but they do exist in memory during the build. Since this is your personal machine running a private repo, this is fine. If you ever make the repo public, be aware that anyone who submits a PR could potentially run code on your MacBook — keep the repo private.
+
 ---
 
-## 11. TestFlight: Adding Yourself as a Tester
+## 12. TestFlight: Adding Yourself as a Tester
 
 ### What is TestFlight?
 
@@ -434,7 +512,7 @@ That's it. Every build that uploads successfully will automatically be available
 
 ---
 
-## 12. Trigger Your First Automated Build
+## 13. Trigger Your First Automated Build
 
 Once everything above is configured:
 
@@ -456,7 +534,8 @@ git push origin main
 1. Go to GitHub → your repo → **Actions** tab
 2. You should see the "Deploy to TestFlight" workflow running
 3. Click into it to watch the live logs
-4. The whole process takes ~10-20 minutes
+4. On your self-hosted MacBook runner, the build should complete in ~2-5 minutes
+5. You can also monitor locally — the runner logs to `~/actions-runner/_diag/`
 
 ### If it fails
 
@@ -467,11 +546,13 @@ Check the logs in the Actions tab. Common first-run issues:
 | "No signing certificate" | Re-run `fastlane match appstore` locally, push changes to certs repo |
 | "Authentication failed" | Double-check `ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_KEY_CONTENT` secrets |
 | "No provisioning profile" | Make sure the bundle ID in App Store Connect matches `steven.Porch` exactly |
-| "Xcode not found" | The runner may not have your exact Xcode version; adjust the `xcode-select` step |
+| "Xcode not found" | Run `xcode-select -p` on your MacBook to verify the Xcode path |
+| Job stays "Queued" | Your MacBook may be asleep or the runner service isn't running — check `sudo ./svc.sh status` in `~/actions-runner` |
+| "Runner is offline" | Restart the service: `cd ~/actions-runner && sudo ./svc.sh stop && sudo ./svc.sh start` |
 
 ---
 
-## 13. Installing the Build on Your Phone
+## 14. Installing the Build on Your Phone
 
 Once the build uploads and Apple processes it (10-30 minutes after upload):
 
@@ -494,29 +575,17 @@ TestFlight builds expire after **90 days**. After that, the app stops launching 
 
 ---
 
-## 14. Speeding Up Iteration
+## 15. Speeding Up Iteration
 
-The default pipeline (push → CI build → TestFlight processing → manual install) takes **30-60 minutes**. Here are ways to dramatically reduce that:
+With your MacBook Pro M5 as a self-hosted runner, the build step is already fast (~2-5 minutes). The main bottleneck is now **TestFlight processing** (~10-30 minutes). Here's how to reduce total cycle time further:
 
-### Tier 1: Quick Wins (No Extra Cost)
+### Tier 1: Quick Wins (Already Configured)
 
-#### A. Cache Swift Package Manager dependencies
-Add this to your GitHub Actions workflow before the build step:
-
-```yaml
-- name: Cache SPM
-  uses: actions/cache@v4
-  with:
-    path: |
-      ~/Library/Developer/Xcode/DerivedData
-      .build
-    key: spm-${{ hashFiles('Porch.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
-```
-
-**Saves: 2-5 minutes per build.**
+#### A. Self-hosted runner with warm caches
+Already done — your MacBook keeps `DerivedData` and SPM packages cached between builds. No cold start penalty.
 
 #### B. Skip TestFlight processing wait
-Already configured in the Fastfile above (`skip_waiting_for_build_processing: true`). Fastlane won't block waiting for Apple to process the build.
+Already configured in the Fastfile (`skip_waiting_for_build_processing: true`). The build step finishes as soon as the upload completes.
 
 #### C. Use `workflow_dispatch` for on-demand builds
 The workflow already includes this trigger. You can start builds from GitHub's Actions UI or via the GitHub CLI:
@@ -525,41 +594,9 @@ The workflow already includes this trigger. You can start builds from GitHub's A
 gh workflow run testflight.yml --ref main
 ```
 
-### Tier 2: Faster Builds (~$15-50/month)
+### Tier 2: Bypass TestFlight Entirely for Dev Builds
 
-#### D. Self-hosted Mac Mini runner
-Use your own Mac or a cloud Mac Mini as a GitHub Actions runner. Build times drop from ~15 minutes to ~3-5 minutes because there's no VM spin-up and dependencies are pre-cached.
-
-**Setup:**
-1. Buy/rent a Mac Mini M4 (or use your existing Mac)
-2. GitHub repo → Settings → Actions → Runners → **New self-hosted runner**
-3. Follow the setup instructions
-4. Change `runs-on: macos-15` to `runs-on: self-hosted` in the workflow
-
-**Cloud options:**
-- [MacStadium](https://www.macstadium.com/) — from ~$50/month
-- [Macly.io](https://macly.io/) — from $14.99/month for dedicated Mac Mini M4
-
-#### E. Codemagic (API-triggered builds)
-Codemagic provides Apple Silicon build machines with a simple REST API:
-
-```bash
-# Trigger a build programmatically
-curl -X POST https://api.codemagic.io/builds \
-  -H "Content-Type: application/json" \
-  -H "x-auth-token: YOUR_CODEMAGIC_TOKEN" \
-  -d '{
-    "appId": "YOUR_APP_ID",
-    "workflowId": "YOUR_WORKFLOW_ID",
-    "branch": "main"
-  }'
-```
-
-Pay-as-you-go at ~$0.04/minute. Builds run on M2/M4 Pro hardware. An LLM tool could call this API directly.
-
-### Tier 3: Bypass TestFlight Entirely for Dev Builds
-
-#### F. Direct device installation via Xcode (fastest possible)
+#### D. Direct device installation via Xcode (fastest possible)
 If you're iterating rapidly and your Mac is nearby:
 
 ```bash
@@ -571,7 +608,7 @@ xcodebuild -project Porch.xcodeproj -scheme Porch \
 
 **Time: ~1-3 minutes.** No TestFlight processing delay.
 
-#### G. Use `ios-deploy` for wireless deployment
+#### E. Use `ios-deploy` for wireless deployment
 Install your app over WiFi to a connected device:
 
 ```bash
@@ -586,12 +623,12 @@ xcodebuild -project Porch.xcodeproj -scheme Porch \
 ios-deploy --bundle build/Build/Products/Debug-iphoneos/Porch.app
 ```
 
-#### H. SwiftUI Previews for UI iteration
+#### F. SwiftUI Previews for UI iteration
 For UI changes, SwiftUI Previews in Xcode give instant feedback without building or deploying. Not applicable for backend/networking changes, but covers a large portion of UI work.
 
-### Tier 4: Architectural Changes for Faster Feedback Loops
+### Tier 3: Architectural Changes for Faster Feedback Loops
 
-#### I. Runtime log collector (enables targeted fixes)
+#### G. Runtime log collector (enables targeted fixes)
 Add a lightweight log drain to the app that sends structured events to a server. The LLM can read these logs to understand what's failing without waiting for you to report bugs.
 
 ```swift
@@ -611,7 +648,7 @@ func reportEvent(_ event: String, metadata: [String: String] = [:]) {
 
 The LLM reads logs → identifies issues → pushes fix → CI builds → you get the fix. Closes the feedback loop.
 
-#### J. Feature flags for instant rollout control
+#### H. Feature flags for instant rollout control
 Use a remote config service (Firebase Remote Config, or a simple JSON endpoint) to toggle features without rebuilding:
 
 ```swift
@@ -625,18 +662,21 @@ if RemoteConfig.shared.isEnabled("new_chat_ui") {
 
 The LLM can update flag values server-side. Changes take effect on next app launch — no build needed.
 
-#### K. Server-driven UI for zero-build iteration
+#### I. Server-driven UI for zero-build iteration
 Move parts of the UI definition to your server. The app fetches a layout spec (JSON) and renders it dynamically. Changes to the server response instantly change the app. This is a significant architectural investment but eliminates the build cycle entirely for supported UI.
 
 ### Summary: Iteration Speed Comparison
 
 | Method | Push-to-phone time | Cost |
 |---|---|---|
-| GitHub Actions → TestFlight | 30-60 min | Free (2000 min/mo) |
-| Codemagic → TestFlight | 20-40 min | ~$0.04/min |
-| Self-hosted runner → TestFlight | 15-35 min | $15-50/mo |
+| **MacBook runner → TestFlight (your setup)** | **15-35 min** | **Free** |
 | Direct Xcode install (USB/WiFi) | 1-3 min | Free |
 | Feature flags (no build needed) | Instant | Free-$25/mo |
 | Server-driven UI (no build needed) | Instant | Hosting costs |
 
-**Recommended starting point:** Set up the GitHub Actions pipeline first (Steps 1-13). Once it's working, add the runtime log collector (Tier 4-I) to close the feedback loop. Then consider self-hosted runners or Codemagic if build times become a bottleneck.
+> The 15-35 min is dominated by TestFlight processing (~10-30 min), not the build itself (~2-5 min). There's no way to speed up Apple's processing time. The Tier 2 options (direct device install) bypass it entirely.
+
+**Recommended progression:**
+1. Get the full pipeline working first (Steps 1-14)
+2. Add the runtime log collector (Tier 3-G) to close the feedback loop
+3. For rapid dev iteration, use direct Xcode install (Tier 2-D) alongside the TestFlight pipeline
