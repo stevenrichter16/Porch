@@ -158,7 +158,7 @@ final class ChatViewModel: ObservableObject {
     }
 
     private func startStreamingConversation(parameters: GenerationParameters) {
-        Self.logger.info("[startStream] threadId=\(self.chat.id, privacy: .public) model=\(self.chat.modelID, privacy: .public) toolMode=\(String(describing: self.settings.toolCallingMode), privacy: .public)")
+        Self.logger.info("[startStream] threadId=\(self.chat.id, privacy: .public) model=\(self.chat.modelID, privacy: .public) toolMode=\(String(describing: self.settings.toolCallingMode), privacy: .public) temp=\(parameters.temperature) maxTokens=\(parameters.maxTokens) topP=\(parameters.topP) freqPenalty=\(parameters.frequencyPenalty) presPenalty=\(parameters.presencePenalty)")
         streamTask?.cancel()
         errorMessage = nil
         infoMessage = nil
@@ -266,6 +266,7 @@ final class ChatViewModel: ObservableObject {
         var receivedToolCalls: [ToolCall]?
         let clock = ContinuousClock()
         var lastPublishedAt = clock.now
+        let roundStartTime = clock.now
 
         do {
             let stream = await client.streamCompletion(request: descriptor)
@@ -292,8 +293,11 @@ final class ChatViewModel: ObservableObject {
                 return .cancelled
             }
 
+            let roundDuration = clock.now - roundStartTime
+
             // If we received structured tool calls, return them for the loop to handle
             if let toolCalls = receivedToolCalls, !toolCalls.isEmpty {
+                Self.logger.info("[streamRound] threadId=\(self.chat.id, privacy: .public) duration=\(roundDuration, privacy: .public) source=native toolCallCount=\(toolCalls.count) responseLength=\(draftText.count)")
                 let content = draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : draftText
                 streamingText = ""
                 return .toolCallsReceived(toolCalls, assistantContent: content)
@@ -305,6 +309,7 @@ final class ChatViewModel: ObservableObject {
                !draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 let parseResult = TextToolCallParser.parse(draftText)
                 if !parseResult.toolCalls.isEmpty {
+                    Self.logger.info("[streamRound] threadId=\(self.chat.id, privacy: .public) duration=\(roundDuration, privacy: .public) source=textParsed toolCallCount=\(parseResult.toolCalls.count) responseLength=\(draftText.count)")
                     let synthesized = parseResult.toolCalls.map { parsed in
                         ToolCall(
                             id: "text_\(UUID().uuidString.prefix(8))",
@@ -318,6 +323,7 @@ final class ChatViewModel: ObservableObject {
             }
 
             // Normal text completion
+            Self.logger.info("[streamRound] threadId=\(self.chat.id, privacy: .public) duration=\(roundDuration, privacy: .public) source=textOnly responseLength=\(draftText.count) finishReason=\(finishReason?.rawValue ?? "nil", privacy: .public)")
             persistAssistantDraft(text: draftText, isPartial: false, finishReason: finishReason)
             return .textCompleted(finishReason)
 
@@ -371,7 +377,8 @@ final class ChatViewModel: ObservableObject {
     }
 
     private func executeToolCall(_ toolCall: ToolCall) async -> String? {
-        Self.logger.info("[toolExec] threadId=\(self.chat.id, privacy: .public) tool=\(toolCall.function.name, privacy: .public) callId=\(toolCall.id, privacy: .public)")
+        let execStart = ContinuousClock.now
+        Self.logger.info("[toolExec] threadId=\(self.chat.id, privacy: .public) tool=\(toolCall.function.name, privacy: .public) callId=\(toolCall.id, privacy: .public) args=\(toolCall.function.arguments.prefix(500), privacy: .public)")
 
         if settings.isWebSearchConnectorEnabled,
            webSearchConnector.toolDefinitions.contains(where: { $0.function.name == toolCall.function.name }) {
@@ -380,10 +387,12 @@ final class ChatViewModel: ObservableObject {
                     toolName: toolCall.function.name,
                     arguments: toolCall.function.arguments
                 )
-                Self.logger.info("[toolExec] threadId=\(self.chat.id, privacy: .public) tool=\(toolCall.function.name, privacy: .public) resultLength=\(result.count)")
+                let execDuration = ContinuousClock.now - execStart
+                Self.logger.info("[toolExec] threadId=\(self.chat.id, privacy: .public) tool=\(toolCall.function.name, privacy: .public) resultLength=\(result.count) duration=\(execDuration, privacy: .public)")
                 return result
             } catch {
-                Self.logger.error("[toolExec] threadId=\(self.chat.id, privacy: .public) tool=\(toolCall.function.name, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+                let execDuration = ContinuousClock.now - execStart
+                Self.logger.error("[toolExec] threadId=\(self.chat.id, privacy: .public) tool=\(toolCall.function.name, privacy: .public) error=\(error.localizedDescription, privacy: .public) duration=\(execDuration, privacy: .public)")
                 return "{\"error\": \"\(error.localizedDescription)\"}"
             }
         }
@@ -431,10 +440,12 @@ final class ChatViewModel: ObservableObject {
                 arguments: toolCall.function.arguments,
                 context: githubContext
             )
-            Self.logger.info("[toolExec] threadId=\(self.chat.id, privacy: .public) tool=\(toolCall.function.name, privacy: .public) resultLength=\(result.count)")
+            let execDuration = ContinuousClock.now - execStart
+            Self.logger.info("[toolExec] threadId=\(self.chat.id, privacy: .public) tool=\(toolCall.function.name, privacy: .public) resultLength=\(result.count) duration=\(execDuration, privacy: .public)")
             return result
         } catch {
-            Self.logger.error("[toolExec] threadId=\(self.chat.id, privacy: .public) tool=\(toolCall.function.name, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+            let execDuration = ContinuousClock.now - execStart
+            Self.logger.error("[toolExec] threadId=\(self.chat.id, privacy: .public) tool=\(toolCall.function.name, privacy: .public) error=\(error.localizedDescription, privacy: .public) duration=\(execDuration, privacy: .public)")
             return "{\"error\": \"\(error.localizedDescription)\"}"
         }
     }
@@ -547,7 +558,12 @@ final class ChatViewModel: ObservableObject {
             }
         }
 
-        Self.logger.debug("[outbound] threadId=\(self.chat.id, privacy: .public) messageCount=\(messages.count) toolMode=\(String(describing: self.settings.toolCallingMode), privacy: .public)")
+        let systemMsgCount = messages.filter { $0.role == MessageRole.system.rawValue }.count
+        let userMsgCount = messages.filter { $0.role == MessageRole.user.rawValue }.count
+        let assistantMsgCount = messages.filter { $0.role == MessageRole.assistant.rawValue }.count
+        let toolMsgCount = messages.filter { $0.role == MessageRole.tool.rawValue }.count
+        let totalChars = messages.compactMap(\.content).reduce(0) { $0 + $1.count }
+        Self.logger.info("[outbound] threadId=\(self.chat.id, privacy: .public) messageCount=\(messages.count) system=\(systemMsgCount) user=\(userMsgCount) assistant=\(assistantMsgCount) tool=\(toolMsgCount) totalChars=\(totalChars) toolMode=\(String(describing: self.settings.toolCallingMode), privacy: .public)")
         return messages
     }
 

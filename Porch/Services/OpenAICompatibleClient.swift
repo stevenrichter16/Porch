@@ -193,12 +193,14 @@ actor OpenAICompatibleClient {
     }
 
     private func fetchNonStreamingCompletion(descriptor: OpenAIChatRequestDescriptor) async throws -> NonStreamingCompletionResult {
+        Self.logger.info("[nonStream] model=\(descriptor.modelID, privacy: .public) messageCount=\(descriptor.messages.count)")
         let request = try buildChatCompletionRequest(descriptor: descriptor, stream: false)
         let (data, response) = try await session.data(for: request)
         try validateHTTP(response: response, body: data)
         let decoded = try decoder.decode(ChatCompletionResponseBody.self, from: data)
 
         guard let firstChoice = decoded.choices.first else {
+            Self.logger.error("[nonStream] emptyResponse noChoices")
             throw StreamError.emptyResponse
         }
 
@@ -206,6 +208,7 @@ actor OpenAICompatibleClient {
 
         // Check for tool calls
         if let toolCalls = firstChoice.message.tool_calls, !toolCalls.isEmpty {
+            Self.logger.info("[nonStream] result hasToolCalls=\(toolCalls.count) tools=\(toolCalls.map(\.function.name).joined(separator: ","), privacy: .public) finishReason=\(finishReason?.rawValue ?? "nil", privacy: .public)")
             return NonStreamingCompletionResult(
                 content: firstChoice.message.content,
                 toolCalls: toolCalls,
@@ -215,9 +218,11 @@ actor OpenAICompatibleClient {
 
         let content = (firstChoice.message.content ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !content.isEmpty else {
+            Self.logger.error("[nonStream] emptyResponse emptyContent")
             throw StreamError.emptyResponse
         }
 
+        Self.logger.info("[nonStream] result contentLength=\(content.count) finishReason=\(finishReason?.rawValue ?? "nil", privacy: .public)")
         return NonStreamingCompletionResult(content: content, finishReason: finishReason)
     }
 
@@ -305,7 +310,7 @@ actor OpenAICompatibleClient {
         }
         guard (200 ... 299).contains(httpResponse.statusCode) else {
             let message = String(data: body, encoding: .utf8) ?? ""
-            Self.logger.error("[http] statusCode=\(httpResponse.statusCode) bodyLength=\(message.count)")
+            Self.logger.error("[http] statusCode=\(httpResponse.statusCode) body=\(message.prefix(1000), privacy: .public)")
             throw StreamError.httpError(statusCode: httpResponse.statusCode, body: message)
         }
     }
@@ -326,7 +331,7 @@ actor OpenAICompatibleClient {
         for try await line in lines {
             body.append(line)
         }
-        Self.logger.error("[http] streaming statusCode=\(httpResponse.statusCode) bodyLength=\(body.count)")
+        Self.logger.error("[http] streaming statusCode=\(httpResponse.statusCode) body=\(body.prefix(1000), privacy: .public)")
         throw StreamError.httpError(statusCode: httpResponse.statusCode, body: body)
     }
 }

@@ -1,6 +1,8 @@
 import Foundation
+import os
 
 actor DuckDuckGoClient {
+    private static let logger = Logger(subsystem: "com.porch.app", category: "DuckDuckGo")
     private let session: URLSession
 
     init(session: URLSession = .shared) {
@@ -43,7 +45,9 @@ actor DuckDuckGoClient {
             throw ConnectorError.apiError("Could not decode search response.")
         }
 
-        return parseResults(from: html, maxResults: min(max(maxResults, 1), 15))
+        let results = parseResults(from: html, maxResults: min(max(maxResults, 1), 15))
+        Self.logger.info("[search] query=\(trimmedQuery, privacy: .public) resultCount=\(results.count) htmlLength=\(html.count)")
+        return results
     }
 
     func fetchPageContent(url urlString: String, maxLength: Int = 15_000) async throws -> String {
@@ -72,7 +76,9 @@ actor DuckDuckGoClient {
         }
 
         let text = extractReadableText(from: html)
-        if text.count > maxLength {
+        let truncated = text.count > maxLength
+        Self.logger.info("[fetchPage] url=\(urlString, privacy: .public) rawLength=\(html.count) textLength=\(text.count) truncated=\(truncated)")
+        if truncated {
             return String(text.prefix(maxLength)) + "\n\n[Content truncated at \(maxLength) characters]"
         }
         return text

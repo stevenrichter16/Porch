@@ -49,8 +49,12 @@ enum TextToolCallParser {
         toolCalls = toolCalls.filter { seen.insert($0).inserted }
 
         if toolCalls.isEmpty {
-            logger.debug("[parse] noToolCallsFound inputLength=\(text.count)")
+            let hasToolCallMarkers = text.contains("<tool_call>") || text.contains("```tool_call")
+            logger.debug("[parse] noToolCallsFound inputLength=\(text.count) hasMarkers=\(hasToolCallMarkers) textSnippet=\(String(text.suffix(200)), privacy: .public)")
         } else {
+            for tc in toolCalls {
+                logger.info("[parse] toolCall name=\(tc.name, privacy: .public) argsLength=\(tc.arguments.count) args=\(tc.arguments.prefix(300), privacy: .public)")
+            }
             logger.info("[parse] foundToolCalls=\(toolCalls.count) names=\(toolCalls.map(\.name).joined(separator: ","), privacy: .public) remainingTextLength=\(remaining.count)")
         }
 
