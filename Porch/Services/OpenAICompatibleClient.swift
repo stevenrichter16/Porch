@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 enum StreamError: LocalizedError, Equatable {
     case invalidBaseURL
@@ -30,6 +31,7 @@ enum StreamError: LocalizedError, Equatable {
 }
 
 actor OpenAICompatibleClient {
+    private static let logger = Logger(subsystem: "com.porch.app", category: "API")
     private let session: URLSession
     private let decoder: JSONDecoder
     private let sseParser: SSEParser
@@ -45,15 +47,22 @@ actor OpenAICompatibleClient {
     }
 
     func fetchModels(configuration: ServerConfiguration) async throws -> [RemoteModel] {
+        Self.logger.info("[fetchModels] baseURL=\(configuration.baseURL, privacy: .public)")
         let request = try buildModelsRequest(configuration: configuration)
-        let (data, response) = try await session.data(for: request)
-        try validateHTTP(response: response, body: data)
-        let decoded = try decoder.decode(ModelsResponseBody.self, from: data)
-        let models = decoded.data.map { RemoteModel(id: $0.id, ownedBy: $0.owned_by) }
-        guard !models.isEmpty else {
-            throw StreamError.missingModels
+        do {
+            let (data, response) = try await session.data(for: request)
+            try validateHTTP(response: response, body: data)
+            let decoded = try decoder.decode(ModelsResponseBody.self, from: data)
+            let models = decoded.data.map { RemoteModel(id: $0.id, ownedBy: $0.owned_by) }
+            guard !models.isEmpty else {
+                throw StreamError.missingModels
+            }
+            Self.logger.info("[fetchModels] modelCount=\(models.count)")
+            return models.sorted { $0.id.localizedCaseInsensitiveCompare($1.id) == .orderedAscending }
+        } catch {
+            Self.logger.error("[fetchModels] error=\(error.localizedDescription, privacy: .public)")
+            throw error
         }
-        return models.sorted { $0.id.localizedCaseInsensitiveCompare($1.id) == .orderedAscending }
     }
 
     func streamCompletion(request descriptor: OpenAIChatRequestDescriptor) -> AsyncThrowingStream<ChatStreamEvent, Error> {
@@ -81,6 +90,7 @@ actor OpenAICompatibleClient {
         descriptor: OpenAIChatRequestDescriptor,
         continuation: AsyncThrowingStream<ChatStreamEvent, Error>.Continuation
     ) async throws {
+        Self.logger.info("[stream] model=\(descriptor.modelID, privacy: .public) messageCount=\(descriptor.messages.count) hasTools=\(descriptor.tools != nil) toolCount=\(descriptor.tools?.count ?? 0)")
         var yieldedContent = false
 
         do {
@@ -102,8 +112,10 @@ actor OpenAICompatibleClient {
                     // If we accumulated tool calls, yield them before completing
                     if !toolCallAccumulator.isEmpty {
                         let assembled = assembleToolCalls(from: toolCallAccumulator)
+                        Self.logger.info("[stream] assembledToolCalls=\(assembled.count) tools=\(assembled.map(\.function.name).joined(separator: ","), privacy: .public)")
                         continuation.yield(.toolCalls(assembled))
                     }
+                    Self.logger.info("[stream] completed finishReason=\(finishReason?.rawValue ?? "nil", privacy: .public)")
                     continuation.yield(.completed(finishReason))
                     continuation.finish()
                     return
@@ -150,12 +162,14 @@ actor OpenAICompatibleClient {
             continuation.yield(.completed(finishReason))
             continuation.finish()
         } catch is CancellationError {
+            Self.logger.debug("[stream] cancelled")
             throw CancellationError()
         } catch {
             if yieldedContent {
                 throw error
             }
 
+            Self.logger.info("[stream] streamingFailed fallingBackToNonStreaming error=\(error.localizedDescription, privacy: .public)")
             let fallback = try await fetchNonStreamingCompletion(descriptor: descriptor)
             if let toolCalls = fallback.toolCalls, !toolCalls.isEmpty {
                 continuation.yield(.toolCalls(toolCalls))
@@ -291,6 +305,7 @@ actor OpenAICompatibleClient {
         }
         guard (200 ... 299).contains(httpResponse.statusCode) else {
             let message = String(data: body, encoding: .utf8) ?? ""
+            Self.logger.error("[http] statusCode=\(httpResponse.statusCode) bodyLength=\(message.count)")
             throw StreamError.httpError(statusCode: httpResponse.statusCode, body: message)
         }
     }
@@ -311,6 +326,7 @@ actor OpenAICompatibleClient {
         for try await line in lines {
             body.append(line)
         }
+        Self.logger.error("[http] streaming statusCode=\(httpResponse.statusCode) bodyLength=\(body.count)")
         throw StreamError.httpError(statusCode: httpResponse.statusCode, body: body)
     }
 }

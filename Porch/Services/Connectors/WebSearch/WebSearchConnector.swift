@@ -1,6 +1,8 @@
 import Foundation
+import os
 
 final class WebSearchConnector: Connector, @unchecked Sendable {
+    private static let logger = Logger(subsystem: "com.porch.app", category: "WebSearch")
     let id = "web_search"
     let displayName = "Web Search"
     let iconSystemName = "globe"
@@ -20,15 +22,24 @@ final class WebSearchConnector: Connector, @unchecked Sendable {
     }
 
     func execute(toolName: String, arguments: String) async throws -> String {
+        Self.logger.info("[exec] tool=\(toolName, privacy: .public)")
         let argsData = Data(arguments.utf8)
 
-        switch toolName {
-        case "web_search":
-            return try await executeSearch(argsData: argsData)
-        case "web_fetch_page":
-            return try await executeFetchPage(argsData: argsData)
-        default:
-            throw ConnectorError.unknownTool(toolName)
+        do {
+            let result: String
+            switch toolName {
+            case "web_search":
+                result = try await executeSearch(argsData: argsData)
+            case "web_fetch_page":
+                result = try await executeFetchPage(argsData: argsData)
+            default:
+                throw ConnectorError.unknownTool(toolName)
+            }
+            Self.logger.info("[exec] tool=\(toolName, privacy: .public) resultLength=\(result.count)")
+            return result
+        } catch {
+            Self.logger.error("[exec] tool=\(toolName, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+            throw error
         }
     }
 

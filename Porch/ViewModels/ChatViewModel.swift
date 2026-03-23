@@ -1,9 +1,11 @@
 import Combine
 import Foundation
+import os
 import SwiftData
 
 @MainActor
 final class ChatViewModel: ObservableObject {
+    private static let logger = Logger(subsystem: "com.porch.app", category: "Chat")
     private static let streamingPublishInterval = Duration.milliseconds(50)
     private static let maxToolCallRounds = 10
 
@@ -64,6 +66,7 @@ final class ChatViewModel: ObservableObject {
     }
 
     func stopGenerating() {
+        Self.logger.info("[stop] threadId=\(self.chat.id, privacy: .public)")
         stopRequested = true
         resolvePendingGitHubWriteApproval(with: .stopGeneration)
         streamTask?.cancel()
@@ -80,6 +83,7 @@ final class ChatViewModel: ObservableObject {
     }
 
     func regenerateLastResponse() {
+        Self.logger.info("[regenerate] threadId=\(self.chat.id, privacy: .public)")
         let persistedMessages = try? ChatMessageQueries.fetchSortedMessages(for: chat, in: modelContext)
         guard let messages = persistedMessages, let lastMessage = messages.last, lastMessage.role == .assistant else {
             return
@@ -111,6 +115,7 @@ final class ChatViewModel: ObservableObject {
             let originalContent = targetMessage.content
             let laterMessages = persistedMessages.suffix(from: targetIndex + 1)
 
+            Self.logger.info("[edit] threadId=\(self.chat.id, privacy: .public) messageId=\(messageID, privacy: .public) deletedCount=\(laterMessages.count)")
             targetMessage.content = trimmed
             for laterMessage in laterMessages {
                 modelContext.delete(laterMessage)
@@ -127,6 +132,7 @@ final class ChatViewModel: ObservableObject {
             try modelContext.save()
             startStreamingConversation(parameters: settings.generationParameters)
         } catch {
+            Self.logger.error("[edit] threadId=\(self.chat.id, privacy: .public) messageId=\(messageID, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
             errorMessage = error.localizedDescription
         }
     }
@@ -140,6 +146,7 @@ final class ChatViewModel: ObservableObject {
     }
 
     private func send(messageText: String, parameters: GenerationParameters) {
+        Self.logger.info("[send] threadId=\(self.chat.id, privacy: .public) messageLength=\(messageText.count) model=\(self.chat.modelID, privacy: .public)")
         let userMessage = ChatMessage(role: .user, content: messageText, thread: chat)
         modelContext.insert(userMessage)
         if chat.isUntitled {
@@ -151,6 +158,7 @@ final class ChatViewModel: ObservableObject {
     }
 
     private func startStreamingConversation(parameters: GenerationParameters) {
+        Self.logger.info("[startStream] threadId=\(self.chat.id, privacy: .public) model=\(self.chat.modelID, privacy: .public) toolMode=\(String(describing: self.settings.toolCallingMode), privacy: .public)")
         streamTask?.cancel()
         errorMessage = nil
         infoMessage = nil
@@ -168,6 +176,7 @@ final class ChatViewModel: ObservableObject {
                 streamTask = nil
             }
         } catch {
+            Self.logger.error("[startStream] threadId=\(self.chat.id, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
             isStreaming = false
             errorMessage = error.localizedDescription
         }
@@ -179,6 +188,8 @@ final class ChatViewModel: ObservableObject {
 
         while roundsRemaining > 0 {
             roundsRemaining -= 1
+            let currentRound = Self.maxToolCallRounds - roundsRemaining
+            Self.logger.info("[toolLoop] threadId=\(self.chat.id, privacy: .public) round=\(currentRound)/\(Self.maxToolCallRounds)")
 
             do {
                 let availableTools = allToolDefinitions()
@@ -196,6 +207,7 @@ final class ChatViewModel: ObservableObject {
 
                 switch result {
                 case .textCompleted(let finishReason):
+                    Self.logger.info("[toolLoop] threadId=\(self.chat.id, privacy: .public) result=textCompleted finishReason=\(finishReason?.rawValue ?? "nil", privacy: .public)")
                     if tools != nil && isFirstRound && settings.toolCallingMode == .native {
                         infoMessage = "This model may not support tool calling. Try switching to Auto or Prompt-Based mode in Settings > Connectors."
                     } else {
@@ -204,6 +216,7 @@ final class ChatViewModel: ObservableObject {
                     return
 
                 case .toolCallsReceived(let toolCalls, let assistantContent):
+                    Self.logger.info("[toolLoop] threadId=\(self.chat.id, privacy: .public) result=toolCallsReceived count=\(toolCalls.count) tools=\(toolCalls.map(\.function.name).joined(separator: ","), privacy: .public)")
                     persistAssistantToolCallMessage(content: assistantContent, toolCalls: toolCalls)
 
                     for toolCall in toolCalls {
@@ -218,13 +231,16 @@ final class ChatViewModel: ObservableObject {
                     streamingText = ""
 
                 case .cancelled:
+                    Self.logger.info("[toolLoop] threadId=\(self.chat.id, privacy: .public) result=cancelled")
                     return
 
                 case .error(let error):
+                    Self.logger.error("[toolLoop] threadId=\(self.chat.id, privacy: .public) result=error error=\(error.localizedDescription, privacy: .public)")
                     errorMessage = error.localizedDescription
                     return
                 }
             } catch {
+                Self.logger.error("[toolLoop] threadId=\(self.chat.id, privacy: .public) result=error error=\(error.localizedDescription, privacy: .public)")
                 errorMessage = error.localizedDescription
                 return
             }
@@ -233,6 +249,7 @@ final class ChatViewModel: ObservableObject {
         }
 
         // Safety limit reached
+        Self.logger.info("[toolLoop] threadId=\(self.chat.id, privacy: .public) result=safetyLimitReached maxRounds=\(Self.maxToolCallRounds)")
         infoMessage = "Stopped after \(Self.maxToolCallRounds) tool-calling rounds."
     }
 
@@ -354,20 +371,26 @@ final class ChatViewModel: ObservableObject {
     }
 
     private func executeToolCall(_ toolCall: ToolCall) async -> String? {
+        Self.logger.info("[toolExec] threadId=\(self.chat.id, privacy: .public) tool=\(toolCall.function.name, privacy: .public) callId=\(toolCall.id, privacy: .public)")
+
         if settings.isWebSearchConnectorEnabled,
            webSearchConnector.toolDefinitions.contains(where: { $0.function.name == toolCall.function.name }) {
             do {
-                return try await webSearchConnector.execute(
+                let result = try await webSearchConnector.execute(
                     toolName: toolCall.function.name,
                     arguments: toolCall.function.arguments
                 )
+                Self.logger.info("[toolExec] threadId=\(self.chat.id, privacy: .public) tool=\(toolCall.function.name, privacy: .public) resultLength=\(result.count)")
+                return result
             } catch {
+                Self.logger.error("[toolExec] threadId=\(self.chat.id, privacy: .public) tool=\(toolCall.function.name, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
                 return "{\"error\": \"\(error.localizedDescription)\"}"
             }
         }
 
         do {
             guard let githubContext = chat.githubContext else {
+                Self.logger.error("[toolExec] threadId=\(self.chat.id, privacy: .public) tool=\(toolCall.function.name, privacy: .public) error=missingGitHubContext")
                 return "{\"error\":\"GitHub tools require a selected repository and branch in this chat.\"}"
             }
 
@@ -377,6 +400,7 @@ final class ChatViewModel: ObservableObject {
                     arguments: toolCall.function.arguments,
                     context: githubContext
                 )
+                Self.logger.info("[toolExec] threadId=\(self.chat.id, privacy: .public) tool=\(toolCall.function.name, privacy: .public) awaitingWriteApproval")
                 switch await waitForGitHubWriteApproval(request: request) {
                 case .approve(let branchName, let commitMessage):
                     streamingText = "Creating GitHub branch and pushing changes..."
@@ -385,26 +409,32 @@ final class ChatViewModel: ObservableObject {
                         branchName: branchName,
                         commitMessage: commitMessage
                     )
+                    Self.logger.info("[toolExec] threadId=\(self.chat.id, privacy: .public) tool=\(toolCall.function.name, privacy: .public) writeApproved branch=\(branchName, privacy: .public)")
                     return try encodeToolResult(result)
 
                 case .cancelByUser:
+                    Self.logger.info("[toolExec] threadId=\(self.chat.id, privacy: .public) tool=\(toolCall.function.name, privacy: .public) writeCancelledByUser")
                     streamingText = ""
                     return try encodeToolResult(
                         GitHubWriteCancelledResult(reason: "User declined GitHub write approval.")
                     )
 
                 case .stopGeneration:
+                    Self.logger.info("[toolExec] threadId=\(self.chat.id, privacy: .public) tool=\(toolCall.function.name, privacy: .public) stopGeneration")
                     streamingText = ""
                     return nil
                 }
             }
 
-            return try await githubConnector.execute(
+            let result = try await githubConnector.execute(
                 toolName: toolCall.function.name,
                 arguments: toolCall.function.arguments,
                 context: githubContext
             )
+            Self.logger.info("[toolExec] threadId=\(self.chat.id, privacy: .public) tool=\(toolCall.function.name, privacy: .public) resultLength=\(result.count)")
+            return result
         } catch {
+            Self.logger.error("[toolExec] threadId=\(self.chat.id, privacy: .public) tool=\(toolCall.function.name, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
             return "{\"error\": \"\(error.localizedDescription)\"}"
         }
     }
@@ -517,6 +547,7 @@ final class ChatViewModel: ObservableObject {
             }
         }
 
+        Self.logger.debug("[outbound] threadId=\(self.chat.id, privacy: .public) messageCount=\(messages.count) toolMode=\(String(describing: self.settings.toolCallingMode), privacy: .public)")
         return messages
     }
 
@@ -542,10 +573,12 @@ final class ChatViewModel: ObservableObject {
     private func persistAssistantDraft(text: String, isPartial: Bool, finishReason: ChatFinishReason?) {
         let finalText = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !finalText.isEmpty else {
+            Self.logger.debug("[persist] threadId=\(self.chat.id, privacy: .public) skipped=emptyDraft")
             streamingText = ""
             return
         }
 
+        Self.logger.debug("[persist] threadId=\(self.chat.id, privacy: .public) role=assistant isPartial=\(isPartial) finishReason=\(finishReason?.rawValue ?? "nil", privacy: .public) contentLength=\(finalText.count)")
         let assistantMessage = ChatMessage(
             role: .assistant,
             content: finalText,

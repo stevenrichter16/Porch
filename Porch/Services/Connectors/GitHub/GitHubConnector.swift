@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 final class GitHubConnector: Connector, @unchecked Sendable {
     private enum GitHubWriteArgumentsMode: Equatable {
@@ -18,6 +19,7 @@ final class GitHubConnector: Connector, @unchecked Sendable {
         }
     }
 
+    private static let logger = Logger(subsystem: "com.porch.app", category: "GitHub")
     let id = "github"
     let displayName = "GitHub"
     let iconSystemName = "chevron.left.forwardslash.chevron.right"
@@ -88,28 +90,37 @@ final class GitHubConnector: Connector, @unchecked Sendable {
     // MARK: - Execution
 
     func execute(toolName: String, arguments: String) async throws -> String {
+        Self.logger.info("[exec] tool=\(toolName, privacy: .public)")
         let client = try makeClient()
         let argsData = Data(arguments.utf8)
 
-        switch toolName {
-        case "github_search_repos":
-            return try await executeSearchRepos(client: client, argsData: argsData)
-        case "github_get_repo_contents":
-            return try await executeGetRepoContents(client: client, argsData: argsData)
-        case "github_get_file_content":
-            return try await executeGetFileContent(client: client, argsData: argsData)
-        case "github_list_issues":
-            return try await executeListIssues(client: client, argsData: argsData)
-        case "github_get_issue":
-            return try await executeGetIssue(client: client, argsData: argsData)
-        case "github_list_pull_requests":
-            return try await executeListPullRequests(client: client, argsData: argsData)
-        case "github_get_pull_request":
-            return try await executeGetPullRequest(client: client, argsData: argsData)
-        case "github_commit_file_changes":
-            throw ConnectorError.apiError("GitHub write tools require explicit approval before execution.")
-        default:
-            throw ConnectorError.unknownTool(toolName)
+        do {
+            let result: String
+            switch toolName {
+            case "github_search_repos":
+                result = try await executeSearchRepos(client: client, argsData: argsData)
+            case "github_get_repo_contents":
+                result = try await executeGetRepoContents(client: client, argsData: argsData)
+            case "github_get_file_content":
+                result = try await executeGetFileContent(client: client, argsData: argsData)
+            case "github_list_issues":
+                result = try await executeListIssues(client: client, argsData: argsData)
+            case "github_get_issue":
+                result = try await executeGetIssue(client: client, argsData: argsData)
+            case "github_list_pull_requests":
+                result = try await executeListPullRequests(client: client, argsData: argsData)
+            case "github_get_pull_request":
+                result = try await executeGetPullRequest(client: client, argsData: argsData)
+            case "github_commit_file_changes":
+                throw ConnectorError.apiError("GitHub write tools require explicit approval before execution.")
+            default:
+                throw ConnectorError.unknownTool(toolName)
+            }
+            Self.logger.debug("[exec] tool=\(toolName, privacy: .public) resultLength=\(result.count)")
+            return result
+        } catch {
+            Self.logger.error("[exec] tool=\(toolName, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+            throw error
         }
     }
 
@@ -118,6 +129,7 @@ final class GitHubConnector: Connector, @unchecked Sendable {
         arguments: String,
         context: GitHubChatContext
     ) async throws -> String {
+        Self.logger.info("[exec] tool=\(toolName, privacy: .public) owner=\(context.owner, privacy: .public) repo=\(context.repo, privacy: .public)")
         let client = try makeClient()
         let argsData = Data(arguments.utf8)
 
@@ -217,6 +229,7 @@ final class GitHubConnector: Connector, @unchecked Sendable {
         arguments: String,
         context: GitHubChatContext
     ) async throws -> GitHubWriteRequest {
+        Self.logger.info("[write] preparing tool=\(toolName, privacy: .public) owner=\(context.owner, privacy: .public) repo=\(context.repo, privacy: .public)")
         guard isWriteTool(toolName) else {
             throw ConnectorError.unknownTool(toolName)
         }
@@ -309,6 +322,7 @@ final class GitHubConnector: Connector, @unchecked Sendable {
         let updatedCount = request.changes.filter { $0.operation == .update }.count
         let deletedCount = request.changes.filter { $0.operation == .delete }.count
 
+        Self.logger.info("[write] success branch=\(normalizedBranchName, privacy: .public) commitSha=\(createdCommit.sha, privacy: .public) fileCount=\(request.changes.count)")
         return GitHubWriteResult(
             status: "success",
             owner: request.owner,

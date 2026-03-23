@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Parses tool calls from LLM text output for models that don't support
 /// structured OpenAI-style `tool_calls` responses.
@@ -18,6 +19,7 @@ import Foundation
 ///    ```
 ///
 enum TextToolCallParser {
+    private static let logger = Logger(subsystem: "com.porch.app", category: "ToolParser")
 
     struct ParsedToolCall: Hashable {
         var name: String
@@ -45,6 +47,12 @@ enum TextToolCallParser {
         // Deduplicate in case both patterns matched overlapping content
         var seen = Set<ParsedToolCall>()
         toolCalls = toolCalls.filter { seen.insert($0).inserted }
+
+        if toolCalls.isEmpty {
+            logger.debug("[parse] noToolCallsFound inputLength=\(text.count)")
+        } else {
+            logger.info("[parse] foundToolCalls=\(toolCalls.count) names=\(toolCalls.map(\.name).joined(separator: ","), privacy: .public) remainingTextLength=\(remaining.count)")
+        }
 
         return ParseResult(
             toolCalls: toolCalls,
