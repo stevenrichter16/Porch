@@ -207,7 +207,7 @@ final class ChatViewModel: ObservableObject {
 
                 switch result {
                 case .textCompleted(let finishReason):
-                    Self.logger.info("[toolLoop] threadId=\(self.chat.id, privacy: .public) result=textCompleted finishReason=\(finishReason?.rawValue ?? "nil", privacy: .public)")
+                    Self.logger.info("[toolLoop] threadId=\(self.chat.id, privacy: .public) result=textCompleted finishReason=\(finishReason?.apiValue ?? "nil", privacy: .public)")
                     if tools != nil && isFirstRound && settings.toolCallingMode == .native {
                         infoMessage = "This model may not support tool calling. Try switching to Auto or Prompt-Based mode in Settings > Connectors."
                     } else {
@@ -323,15 +323,19 @@ final class ChatViewModel: ObservableObject {
             }
 
             // Normal text completion
-            Self.logger.info("[streamRound] threadId=\(self.chat.id, privacy: .public) duration=\(roundDuration, privacy: .public) source=textOnly responseLength=\(draftText.count) finishReason=\(finishReason?.rawValue ?? "nil", privacy: .public)")
+            Self.logger.info("[streamRound] threadId=\(self.chat.id, privacy: .public) duration=\(roundDuration, privacy: .public) source=textOnly responseLength=\(draftText.count) finishReason=\(finishReason?.apiValue ?? "nil", privacy: .public)")
             persistAssistantDraft(text: draftText, isPartial: false, finishReason: finishReason)
             return .textCompleted(finishReason)
 
         } catch is CancellationError {
+            let cancelDuration = clock.now - roundStartTime
+            Self.logger.info("[streamRound] threadId=\(self.chat.id, privacy: .public) duration=\(cancelDuration, privacy: .public) result=cancelled draftLength=\(draftText.count)")
             flushStreamingDraft(draftText)
             persistAssistantDraft(text: draftText, isPartial: true, finishReason: .cancelled)
             return .cancelled
         } catch {
+            let errorDuration = clock.now - roundStartTime
+            Self.logger.error("[streamRound] threadId=\(self.chat.id, privacy: .public) duration=\(errorDuration, privacy: .public) result=error error=\(error.localizedDescription, privacy: .public) draftLength=\(draftText.count) yieldedContent=\(!draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)")
             flushStreamingDraft(draftText)
             let hadDraft = !draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             if hadDraft {
@@ -350,16 +354,20 @@ final class ChatViewModel: ObservableObject {
     private func allToolDefinitions() -> [ToolDefinition] {
         var tools: [ToolDefinition] = []
 
-        if settings.isWebSearchConnectorEnabled, webSearchConnector.isConfigured {
+        let webSearchEnabled = settings.isWebSearchConnectorEnabled
+        let webSearchConfigured = webSearchConnector.isConfigured
+        if webSearchEnabled, webSearchConfigured {
             tools.append(contentsOf: webSearchConnector.toolDefinitions)
         }
 
-        if settings.isGitHubConnectorEnabled,
-           githubConnector.isConfigured,
-           let githubContext = chat.githubContext {
+        let githubEnabled = settings.isGitHubConnectorEnabled
+        let githubConfigured = githubConnector.isConfigured
+        let hasGithubContext = chat.githubContext != nil
+        if githubEnabled, githubConfigured, let githubContext = chat.githubContext {
             tools.append(contentsOf: githubConnector.toolDefinitions(for: githubContext))
         }
 
+        Self.logger.debug("[tools] threadId=\(self.chat.id, privacy: .public) available=\(tools.count) webSearch=\(webSearchEnabled)/\(webSearchConfigured) github=\(githubEnabled)/\(githubConfigured)/\(hasGithubContext)")
         return tools
     }
 
@@ -418,18 +426,21 @@ final class ChatViewModel: ObservableObject {
                         branchName: branchName,
                         commitMessage: commitMessage
                     )
-                    Self.logger.info("[toolExec] threadId=\(self.chat.id, privacy: .public) tool=\(toolCall.function.name, privacy: .public) writeApproved branch=\(branchName, privacy: .public)")
+                    let writeDuration = ContinuousClock.now - execStart
+                    Self.logger.info("[toolExec] threadId=\(self.chat.id, privacy: .public) tool=\(toolCall.function.name, privacy: .public) writeApproved branch=\(branchName, privacy: .public) duration=\(writeDuration, privacy: .public)")
                     return try encodeToolResult(result)
 
                 case .cancelByUser:
-                    Self.logger.info("[toolExec] threadId=\(self.chat.id, privacy: .public) tool=\(toolCall.function.name, privacy: .public) writeCancelledByUser")
+                    let cancelDuration = ContinuousClock.now - execStart
+                    Self.logger.info("[toolExec] threadId=\(self.chat.id, privacy: .public) tool=\(toolCall.function.name, privacy: .public) writeCancelledByUser duration=\(cancelDuration, privacy: .public)")
                     streamingText = ""
                     return try encodeToolResult(
                         GitHubWriteCancelledResult(reason: "User declined GitHub write approval.")
                     )
 
                 case .stopGeneration:
-                    Self.logger.info("[toolExec] threadId=\(self.chat.id, privacy: .public) tool=\(toolCall.function.name, privacy: .public) stopGeneration")
+                    let stopDuration = ContinuousClock.now - execStart
+                    Self.logger.info("[toolExec] threadId=\(self.chat.id, privacy: .public) tool=\(toolCall.function.name, privacy: .public) stopGeneration duration=\(stopDuration, privacy: .public)")
                     streamingText = ""
                     return nil
                 }
@@ -451,8 +462,6 @@ final class ChatViewModel: ObservableObject {
     }
 
     private func persistAssistantToolCallMessage(content: String?, toolCalls: [ToolCall]) {
-        // For simplicity, persist the first tool call's metadata on the assistant message.
-        // If there are multiple tool calls, they'll each get their own tool result message.
         let encoder = JSONEncoder()
         let toolCallsJSON = (try? encoder.encode(toolCalls)).flatMap { String(data: $0, encoding: .utf8) }
 
@@ -467,7 +476,11 @@ final class ChatViewModel: ObservableObject {
         )
         modelContext.insert(assistantMessage)
         chat.applyMessageMutation(latestMessage: assistantMessage)
-        try? modelContext.save()
+        do {
+            try modelContext.save()
+        } catch {
+            Self.logger.error("[persist] threadId=\(self.chat.id, privacy: .public) role=assistantToolCall saveFailed error=\(error.localizedDescription, privacy: .public)")
+        }
         streamingText = ""
     }
 
@@ -482,7 +495,11 @@ final class ChatViewModel: ObservableObject {
         )
         modelContext.insert(toolMessage)
         chat.applyMessageMutation(latestMessage: toolMessage)
-        try? modelContext.save()
+        do {
+            try modelContext.save()
+        } catch {
+            Self.logger.error("[persist] threadId=\(self.chat.id, privacy: .public) role=toolResult tool=\(toolCall.function.name, privacy: .public) saveFailed error=\(error.localizedDescription, privacy: .public)")
+        }
     }
 
     private func currentServerConfiguration() throws -> ServerConfiguration {
@@ -558,11 +575,17 @@ final class ChatViewModel: ObservableObject {
             }
         }
 
-        let systemMsgCount = messages.filter { $0.role == MessageRole.system.rawValue }.count
-        let userMsgCount = messages.filter { $0.role == MessageRole.user.rawValue }.count
-        let assistantMsgCount = messages.filter { $0.role == MessageRole.assistant.rawValue }.count
-        let toolMsgCount = messages.filter { $0.role == MessageRole.tool.rawValue }.count
-        let totalChars = messages.compactMap(\.content).reduce(0) { $0 + $1.count }
+        var systemMsgCount = 0, userMsgCount = 0, assistantMsgCount = 0, toolMsgCount = 0, totalChars = 0
+        for msg in messages {
+            totalChars += msg.content?.count ?? 0
+            switch msg.role {
+            case MessageRole.system.rawValue: systemMsgCount += 1
+            case MessageRole.user.rawValue: userMsgCount += 1
+            case MessageRole.assistant.rawValue: assistantMsgCount += 1
+            case MessageRole.tool.rawValue: toolMsgCount += 1
+            default: break
+            }
+        }
         Self.logger.info("[outbound] threadId=\(self.chat.id, privacy: .public) messageCount=\(messages.count) system=\(systemMsgCount) user=\(userMsgCount) assistant=\(assistantMsgCount) tool=\(toolMsgCount) totalChars=\(totalChars) toolMode=\(String(describing: self.settings.toolCallingMode), privacy: .public)")
         return messages
     }
@@ -594,7 +617,7 @@ final class ChatViewModel: ObservableObject {
             return
         }
 
-        Self.logger.debug("[persist] threadId=\(self.chat.id, privacy: .public) role=assistant isPartial=\(isPartial) finishReason=\(finishReason?.rawValue ?? "nil", privacy: .public) contentLength=\(finalText.count)")
+        Self.logger.debug("[persist] threadId=\(self.chat.id, privacy: .public) role=assistant isPartial=\(isPartial) finishReason=\(finishReason?.apiValue ?? "nil", privacy: .public) contentLength=\(finalText.count)")
         let assistantMessage = ChatMessage(
             role: .assistant,
             content: finalText,

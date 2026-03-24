@@ -35,7 +35,7 @@ struct SSEParser {
         do {
             return .chunk(try decoder.decode(ChatCompletionChunk.self, from: data))
         } catch {
-            Self.logger.debug("Skipping malformed SSE chunk: \(error.localizedDescription, privacy: .public)")
+            Self.logger.debug("[chunk] malformed error=\(error.localizedDescription, privacy: .public) payload=\(payload.prefix(200), privacy: .public)")
             return .ignore
         }
     }

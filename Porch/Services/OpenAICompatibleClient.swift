@@ -115,7 +115,7 @@ actor OpenAICompatibleClient {
                         Self.logger.info("[stream] assembledToolCalls=\(assembled.count) tools=\(assembled.map(\.function.name).joined(separator: ","), privacy: .public)")
                         continuation.yield(.toolCalls(assembled))
                     }
-                    Self.logger.info("[stream] completed finishReason=\(finishReason?.rawValue ?? "nil", privacy: .public)")
+                    Self.logger.info("[stream] completed finishReason=\(finishReason?.apiValue ?? "nil", privacy: .public)")
                     continuation.yield(.completed(finishReason))
                     continuation.finish()
                     return
@@ -155,8 +155,10 @@ actor OpenAICompatibleClient {
             }
 
             // Stream ended without [DONE]
+            Self.logger.info("[stream] endedWithoutDONE finishReason=\(finishReason?.apiValue ?? "nil", privacy: .public)")
             if !toolCallAccumulator.isEmpty {
                 let assembled = assembleToolCalls(from: toolCallAccumulator)
+                Self.logger.info("[stream] assembledToolCalls=\(assembled.count) tools=\(assembled.map(\.function.name).joined(separator: ","), privacy: .public)")
                 continuation.yield(.toolCalls(assembled))
             }
             continuation.yield(.completed(finishReason))
@@ -208,7 +210,7 @@ actor OpenAICompatibleClient {
 
         // Check for tool calls
         if let toolCalls = firstChoice.message.tool_calls, !toolCalls.isEmpty {
-            Self.logger.info("[nonStream] result hasToolCalls=\(toolCalls.count) tools=\(toolCalls.map(\.function.name).joined(separator: ","), privacy: .public) finishReason=\(finishReason?.rawValue ?? "nil", privacy: .public)")
+            Self.logger.info("[nonStream] result hasToolCalls=\(toolCalls.count) tools=\(toolCalls.map(\.function.name).joined(separator: ","), privacy: .public) finishReason=\(finishReason?.apiValue ?? "nil", privacy: .public)")
             return NonStreamingCompletionResult(
                 content: firstChoice.message.content,
                 toolCalls: toolCalls,
@@ -222,7 +224,7 @@ actor OpenAICompatibleClient {
             throw StreamError.emptyResponse
         }
 
-        Self.logger.info("[nonStream] result contentLength=\(content.count) finishReason=\(finishReason?.rawValue ?? "nil", privacy: .public)")
+        Self.logger.info("[nonStream] result contentLength=\(content.count) finishReason=\(finishReason?.apiValue ?? "nil", privacy: .public)")
         return NonStreamingCompletionResult(content: content, finishReason: finishReason)
     }
 

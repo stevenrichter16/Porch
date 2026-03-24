@@ -38,10 +38,13 @@ actor DuckDuckGoClient {
 
         guard let httpResponse = response as? HTTPURLResponse,
               (200...299).contains(httpResponse.statusCode) else {
+            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            Self.logger.error("[search] query=\(trimmedQuery, privacy: .public) httpError statusCode=\(code)")
             throw ConnectorError.apiError("DuckDuckGo returned an error.")
         }
 
         guard let html = String(data: data, encoding: .utf8) else {
+            Self.logger.error("[search] query=\(trimmedQuery, privacy: .public) error=couldNotDecodeResponse dataLength=\(data.count)")
             throw ConnectorError.apiError("Could not decode search response.")
         }
 
@@ -68,10 +71,12 @@ actor DuckDuckGoClient {
         guard let httpResponse = response as? HTTPURLResponse,
               (200...299).contains(httpResponse.statusCode) else {
             let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            Self.logger.error("[fetchPage] url=\(urlString, privacy: .public) httpError statusCode=\(code)")
             throw ConnectorError.apiError("Failed to fetch page (HTTP \(code)).")
         }
 
         guard let html = String(data: data, encoding: .utf8) else {
+            Self.logger.error("[fetchPage] url=\(urlString, privacy: .public) error=couldNotDecodeContent dataLength=\(data.count)")
             throw ConnectorError.apiError("Could not decode page content.")
         }
 

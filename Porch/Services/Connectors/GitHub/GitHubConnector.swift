@@ -133,68 +133,77 @@ final class GitHubConnector: Connector, @unchecked Sendable {
         let client = try makeClient()
         let argsData = Data(arguments.utf8)
 
-        switch toolName {
-        case "github_get_repo_contents":
-            return try await executeGetRepoContents(
-                client: client,
-                owner: context.owner,
-                repo: context.repo,
-                ref: context.branch,
-                argsData: argsData
-            )
-        case "github_get_repo_tree":
-            return try await executeGetRepoTree(
-                client: client,
-                owner: context.owner,
-                repo: context.repo,
-                ref: context.branch,
-                repositoryFullName: context.repositoryLabel,
-                argsData: argsData
-            )
-        case "github_get_file_content":
-            return try await executeGetFileContent(
-                client: client,
-                owner: context.owner,
-                repo: context.repo,
-                ref: context.branch,
-                argsData: argsData
-            )
-        case "github_list_issues":
-            return try await executeListIssues(
-                client: client,
-                owner: context.owner,
-                repo: context.repo,
-                argsData: argsData
-            )
-        case "github_get_issue":
-            return try await executeGetIssue(
-                client: client,
-                owner: context.owner,
-                repo: context.repo,
-                argsData: argsData
-            )
-        case "github_list_pull_requests":
-            return try await executeListPullRequests(
-                client: client,
-                owner: context.owner,
-                repo: context.repo,
-                argsData: argsData
-            )
-        case "github_get_pull_request":
-            return try await executeGetPullRequest(
-                client: client,
-                owner: context.owner,
-                repo: context.repo,
-                argsData: argsData
-            )
-        case "github_commit_file_changes":
-            throw ConnectorError.apiError("GitHub write tools require explicit approval before execution.")
-        default:
-            throw ConnectorError.unknownTool(toolName)
+        do {
+            let result: String
+            switch toolName {
+            case "github_get_repo_contents":
+                result = try await executeGetRepoContents(
+                    client: client,
+                    owner: context.owner,
+                    repo: context.repo,
+                    ref: context.branch,
+                    argsData: argsData
+                )
+            case "github_get_repo_tree":
+                result = try await executeGetRepoTree(
+                    client: client,
+                    owner: context.owner,
+                    repo: context.repo,
+                    ref: context.branch,
+                    repositoryFullName: context.repositoryLabel,
+                    argsData: argsData
+                )
+            case "github_get_file_content":
+                result = try await executeGetFileContent(
+                    client: client,
+                    owner: context.owner,
+                    repo: context.repo,
+                    ref: context.branch,
+                    argsData: argsData
+                )
+            case "github_list_issues":
+                result = try await executeListIssues(
+                    client: client,
+                    owner: context.owner,
+                    repo: context.repo,
+                    argsData: argsData
+                )
+            case "github_get_issue":
+                result = try await executeGetIssue(
+                    client: client,
+                    owner: context.owner,
+                    repo: context.repo,
+                    argsData: argsData
+                )
+            case "github_list_pull_requests":
+                result = try await executeListPullRequests(
+                    client: client,
+                    owner: context.owner,
+                    repo: context.repo,
+                    argsData: argsData
+                )
+            case "github_get_pull_request":
+                result = try await executeGetPullRequest(
+                    client: client,
+                    owner: context.owner,
+                    repo: context.repo,
+                    argsData: argsData
+                )
+            case "github_commit_file_changes":
+                throw ConnectorError.apiError("GitHub write tools require explicit approval before execution.")
+            default:
+                throw ConnectorError.unknownTool(toolName)
+            }
+            Self.logger.debug("[exec] tool=\(toolName, privacy: .public) resultLength=\(result.count)")
+            return result
+        } catch {
+            Self.logger.error("[exec] tool=\(toolName, privacy: .public) owner=\(context.owner, privacy: .public) repo=\(context.repo, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+            throw error
         }
     }
 
     func prepareWriteRequest(toolName: String, arguments: String) async throws -> GitHubWriteRequest {
+        Self.logger.info("[write] preparing tool=\(toolName, privacy: .public) mode=freeform")
         guard isWriteTool(toolName) else {
             throw ConnectorError.unknownTool(toolName)
         }
