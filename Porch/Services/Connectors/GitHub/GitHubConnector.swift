@@ -1,5 +1,5 @@
 import Foundation
-import os
+import OSLog
 
 final class GitHubConnector: Connector, @unchecked Sendable {
     private enum GitHubWriteArgumentsMode: Equatable {
@@ -19,7 +19,6 @@ final class GitHubConnector: Connector, @unchecked Sendable {
         }
     }
 
-    private static let logger = Logger(subsystem: "com.porch.app", category: "GitHub")
     let id = "github"
     let displayName = "GitHub"
     let iconSystemName = "chevron.left.forwardslash.chevron.right"
@@ -28,6 +27,8 @@ final class GitHubConnector: Connector, @unchecked Sendable {
     private static let maxFileContentBytes = 100_000
     private static let maxTotalContentBytes = 300_000
     private static let maxDiffPreviewCharacters = 12_000
+    private static let maxReturnedFileContentCharacters = 12_000
+    private static let logger = Logger(subsystem: "steven.Porch", category: "GitHubConnector")
 
     private let keychain: KeychainStoreProtocol
     private let keychainAccount = "github-pat"
@@ -79,6 +80,7 @@ final class GitHubConnector: Connector, @unchecked Sendable {
             getRepoContentsToolForSelectedContext,
             getRepoTreeToolForSelectedContext,
             getFileContentToolForSelectedContext,
+            getFileTailToolForSelectedContext,
             listIssuesToolForSelectedContext,
             getIssueToolForSelectedContext,
             listPullRequestsToolForSelectedContext,
@@ -90,37 +92,28 @@ final class GitHubConnector: Connector, @unchecked Sendable {
     // MARK: - Execution
 
     func execute(toolName: String, arguments: String) async throws -> String {
-        Self.logger.info("[exec] tool=\(toolName, privacy: .public)")
         let client = try makeClient()
         let argsData = Data(arguments.utf8)
 
-        do {
-            let result: String
-            switch toolName {
-            case "github_search_repos":
-                result = try await executeSearchRepos(client: client, argsData: argsData)
-            case "github_get_repo_contents":
-                result = try await executeGetRepoContents(client: client, argsData: argsData)
-            case "github_get_file_content":
-                result = try await executeGetFileContent(client: client, argsData: argsData)
-            case "github_list_issues":
-                result = try await executeListIssues(client: client, argsData: argsData)
-            case "github_get_issue":
-                result = try await executeGetIssue(client: client, argsData: argsData)
-            case "github_list_pull_requests":
-                result = try await executeListPullRequests(client: client, argsData: argsData)
-            case "github_get_pull_request":
-                result = try await executeGetPullRequest(client: client, argsData: argsData)
-            case "github_commit_file_changes":
-                throw ConnectorError.apiError("GitHub write tools require explicit approval before execution.")
-            default:
-                throw ConnectorError.unknownTool(toolName)
-            }
-            Self.logger.debug("[exec] tool=\(toolName, privacy: .public) resultLength=\(result.count)")
-            return result
-        } catch {
-            Self.logger.error("[exec] tool=\(toolName, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
-            throw error
+        switch toolName {
+        case "github_search_repos":
+            return try await executeSearchRepos(client: client, argsData: argsData)
+        case "github_get_repo_contents":
+            return try await executeGetRepoContents(client: client, argsData: argsData)
+        case "github_get_file_content":
+            return try await executeGetFileContent(client: client, argsData: argsData)
+        case "github_list_issues":
+            return try await executeListIssues(client: client, argsData: argsData)
+        case "github_get_issue":
+            return try await executeGetIssue(client: client, argsData: argsData)
+        case "github_list_pull_requests":
+            return try await executeListPullRequests(client: client, argsData: argsData)
+        case "github_get_pull_request":
+            return try await executeGetPullRequest(client: client, argsData: argsData)
+        case "github_commit_file_changes":
+            throw ConnectorError.apiError("GitHub write tools require explicit approval before execution.")
+        default:
+            throw ConnectorError.unknownTool(toolName)
         }
     }
 
@@ -129,81 +122,79 @@ final class GitHubConnector: Connector, @unchecked Sendable {
         arguments: String,
         context: GitHubChatContext
     ) async throws -> String {
-        Self.logger.info("[exec] tool=\(toolName, privacy: .public) owner=\(context.owner, privacy: .public) repo=\(context.repo, privacy: .public)")
         let client = try makeClient()
         let argsData = Data(arguments.utf8)
 
-        do {
-            let result: String
-            switch toolName {
-            case "github_get_repo_contents":
-                result = try await executeGetRepoContents(
-                    client: client,
-                    owner: context.owner,
-                    repo: context.repo,
-                    ref: context.branch,
-                    argsData: argsData
-                )
-            case "github_get_repo_tree":
-                result = try await executeGetRepoTree(
-                    client: client,
-                    owner: context.owner,
-                    repo: context.repo,
-                    ref: context.branch,
-                    repositoryFullName: context.repositoryLabel,
-                    argsData: argsData
-                )
-            case "github_get_file_content":
-                result = try await executeGetFileContent(
-                    client: client,
-                    owner: context.owner,
-                    repo: context.repo,
-                    ref: context.branch,
-                    argsData: argsData
-                )
-            case "github_list_issues":
-                result = try await executeListIssues(
-                    client: client,
-                    owner: context.owner,
-                    repo: context.repo,
-                    argsData: argsData
-                )
-            case "github_get_issue":
-                result = try await executeGetIssue(
-                    client: client,
-                    owner: context.owner,
-                    repo: context.repo,
-                    argsData: argsData
-                )
-            case "github_list_pull_requests":
-                result = try await executeListPullRequests(
-                    client: client,
-                    owner: context.owner,
-                    repo: context.repo,
-                    argsData: argsData
-                )
-            case "github_get_pull_request":
-                result = try await executeGetPullRequest(
-                    client: client,
-                    owner: context.owner,
-                    repo: context.repo,
-                    argsData: argsData
-                )
-            case "github_commit_file_changes":
-                throw ConnectorError.apiError("GitHub write tools require explicit approval before execution.")
-            default:
-                throw ConnectorError.unknownTool(toolName)
-            }
-            Self.logger.debug("[exec] tool=\(toolName, privacy: .public) resultLength=\(result.count)")
-            return result
-        } catch {
-            Self.logger.error("[exec] tool=\(toolName, privacy: .public) owner=\(context.owner, privacy: .public) repo=\(context.repo, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
-            throw error
+        switch toolName {
+        case "github_get_repo_contents":
+            return try await executeGetRepoContents(
+                client: client,
+                owner: context.owner,
+                repo: context.repo,
+                ref: context.branch,
+                argsData: argsData
+            )
+        case "github_get_repo_tree":
+            return try await executeGetRepoTree(
+                client: client,
+                owner: context.owner,
+                repo: context.repo,
+                ref: context.branch,
+                repositoryFullName: context.repositoryLabel,
+                argsData: argsData
+            )
+        case "github_get_file_content":
+            return try await executeGetFileContent(
+                client: client,
+                owner: context.owner,
+                repo: context.repo,
+                ref: context.branch,
+                argsData: argsData
+            )
+        case "github_get_file_tail":
+            return try await executeGetFileTail(
+                client: client,
+                owner: context.owner,
+                repo: context.repo,
+                ref: context.branch,
+                argsData: argsData
+            )
+        case "github_list_issues":
+            return try await executeListIssues(
+                client: client,
+                owner: context.owner,
+                repo: context.repo,
+                argsData: argsData
+            )
+        case "github_get_issue":
+            return try await executeGetIssue(
+                client: client,
+                owner: context.owner,
+                repo: context.repo,
+                argsData: argsData
+            )
+        case "github_list_pull_requests":
+            return try await executeListPullRequests(
+                client: client,
+                owner: context.owner,
+                repo: context.repo,
+                argsData: argsData
+            )
+        case "github_get_pull_request":
+            return try await executeGetPullRequest(
+                client: client,
+                owner: context.owner,
+                repo: context.repo,
+                argsData: argsData
+            )
+        case "github_commit_file_changes":
+            throw ConnectorError.apiError("GitHub write tools require explicit approval before execution.")
+        default:
+            throw ConnectorError.unknownTool(toolName)
         }
     }
 
     func prepareWriteRequest(toolName: String, arguments: String) async throws -> GitHubWriteRequest {
-        Self.logger.info("[write] preparing tool=\(toolName, privacy: .public) mode=freeform")
         guard isWriteTool(toolName) else {
             throw ConnectorError.unknownTool(toolName)
         }
@@ -217,20 +208,27 @@ final class GitHubConnector: Connector, @unchecked Sendable {
             var changes: [GitHubFileChange]
         }
 
-        let argsData = try validateGitHubWriteArguments(arguments, mode: .freeform)
-        let args = try decodeArgs(
-            Args.self,
-            from: argsData,
-            example: gitHubWriteArgumentsExample(for: .freeform)
-        )
-        return try await prepareWriteRequest(
-            owner: args.owner,
-            repo: args.repo,
-            requestedBaseRef: args.base_ref,
-            requestedBranchName: args.branch_name,
-            commitMessage: args.commit_message,
-            changes: args.changes
-        )
+        do {
+            let argsData = try validateGitHubWriteArguments(arguments, mode: .freeform)
+            let args = try decodeArgs(
+                Args.self,
+                from: argsData,
+                example: gitHubWriteArgumentsExample(for: .freeform)
+            )
+            Self.logger.notice("Preparing freeform GitHub write request for \(args.owner, privacy: .public)/\(args.repo, privacy: .public) requestedBase=\(args.base_ref ?? "<auto>", privacy: .public) requestedBranch=\(args.branch_name ?? "<auto>", privacy: .public) changeCount=\(args.changes.count, privacy: .public)")
+            Self.logger.debug("GitHub write changes: \(self.summarizeChanges(args.changes), privacy: .public)")
+            return try await prepareWriteRequest(
+                owner: args.owner,
+                repo: args.repo,
+                requestedBaseRef: args.base_ref,
+                requestedBranchName: args.branch_name,
+                commitMessage: args.commit_message,
+                changes: args.changes
+            )
+        } catch {
+            Self.logger.error("Failed to prepare freeform GitHub write request: \(error.localizedDescription, privacy: .public)")
+            throw error
+        }
     }
 
     func prepareWriteRequest(
@@ -238,7 +236,6 @@ final class GitHubConnector: Connector, @unchecked Sendable {
         arguments: String,
         context: GitHubChatContext
     ) async throws -> GitHubWriteRequest {
-        Self.logger.info("[write] preparing tool=\(toolName, privacy: .public) owner=\(context.owner, privacy: .public) repo=\(context.repo, privacy: .public)")
         guard isWriteTool(toolName) else {
             throw ConnectorError.unknownTool(toolName)
         }
@@ -249,20 +246,27 @@ final class GitHubConnector: Connector, @unchecked Sendable {
             var changes: [GitHubFileChange]
         }
 
-        let argsData = try validateGitHubWriteArguments(arguments, mode: .selectedContext)
-        let args = try decodeArgs(
-            Args.self,
-            from: argsData,
-            example: gitHubWriteArgumentsExample(for: .selectedContext)
-        )
-        return try await prepareWriteRequest(
-            owner: context.owner,
-            repo: context.repo,
-            requestedBaseRef: context.branch,
-            requestedBranchName: args.branch_name,
-            commitMessage: args.commit_message,
-            changes: args.changes
-        )
+        do {
+            let argsData = try validateGitHubWriteArguments(arguments, mode: .selectedContext)
+            let args = try decodeArgs(
+                Args.self,
+                from: argsData,
+                example: gitHubWriteArgumentsExample(for: .selectedContext)
+            )
+            Self.logger.notice("Preparing context-bound GitHub write request for \(context.repositoryLabel, privacy: .public) base=\(context.branch, privacy: .public) requestedBranch=\(args.branch_name ?? "<auto>", privacy: .public) changeCount=\(args.changes.count, privacy: .public)")
+            Self.logger.debug("GitHub write changes: \(self.summarizeChanges(args.changes), privacy: .public)")
+            return try await prepareWriteRequest(
+                owner: context.owner,
+                repo: context.repo,
+                requestedBaseRef: context.branch,
+                requestedBranchName: args.branch_name,
+                commitMessage: args.commit_message,
+                changes: args.changes
+            )
+        } catch {
+            Self.logger.error("Failed to prepare context-bound GitHub write request for \(context.repositoryLabel, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            throw error
+        }
     }
 
     func executeApprovedWrite(
@@ -270,84 +274,94 @@ final class GitHubConnector: Connector, @unchecked Sendable {
         branchName: String,
         commitMessage: String
     ) async throws -> GitHubWriteResult {
-        guard let token = try keychain.read(account: keychainAccount), !token.isEmpty else {
-            throw ConnectorError.notConfigured("GitHub")
-        }
-
-        let normalizedBranchName = try validateBranchName(branchName)
-        let trimmedCommitMessage = commitMessage.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedCommitMessage.isEmpty else {
-            throw ConnectorError.invalidArguments("Commit message cannot be empty.")
-        }
-
-        let client = GitHubAPIClient(token: token, session: session)
-        try await ensureBranchDoesNotExist(
-            owner: request.owner,
-            repo: request.repo,
-            branchName: normalizedBranchName,
-            client: client
-        )
-
-        var treeEntries: [GitHubCreateTreeRequest.Entry] = []
-        treeEntries.reserveCapacity(request.changes.count)
-
-        for change in request.changes {
-            switch change.operation {
-            case .create, .update:
-                let blob = try await client.createBlob(
-                    owner: request.owner,
-                    repo: request.repo,
-                    content: change.content ?? ""
-                )
-                treeEntries.append(GitHubCreateTreeRequest.Entry(path: change.path, sha: blob.sha))
-
-            case .delete:
-                treeEntries.append(
-                    GitHubCreateTreeRequest.Entry(path: change.path, sha: nil, isDelete: true)
-                )
+        do {
+            guard let token = try keychain.read(account: keychainAccount), !token.isEmpty else {
+                throw ConnectorError.notConfigured("GitHub")
             }
+
+            let normalizedBranchName = try validateBranchName(branchName)
+            let trimmedCommitMessage = commitMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmedCommitMessage.isEmpty else {
+                throw ConnectorError.invalidArguments("Commit message cannot be empty.")
+            }
+
+            Self.logger.notice("Executing approved GitHub write for \(request.repositoryFullName, privacy: .public) base=\(request.resolvedBaseRef, privacy: .public) branch=\(normalizedBranchName, privacy: .public) changeCount=\(request.changes.count, privacy: .public)")
+
+            let client = GitHubAPIClient(token: token, session: session)
+            try await ensureBranchDoesNotExist(
+                owner: request.owner,
+                repo: request.repo,
+                branchName: normalizedBranchName,
+                client: client
+            )
+
+            var treeEntries: [GitHubCreateTreeRequest.Entry] = []
+            treeEntries.reserveCapacity(request.changes.count)
+
+            for change in request.changes {
+                switch change.operation {
+                case .create, .update:
+                    let blob = try await client.createBlob(
+                        owner: request.owner,
+                        repo: request.repo,
+                        content: change.content ?? ""
+                    )
+                    Self.logger.debug("Created blob for \(change.operation.rawValue, privacy: .public):\(change.path, privacy: .public) sha=\(self.shortSHA(blob.sha), privacy: .public)")
+                    treeEntries.append(GitHubCreateTreeRequest.Entry(path: change.path, sha: blob.sha))
+
+                case .delete:
+                    Self.logger.debug("Prepared delete entry for \(change.path, privacy: .public)")
+                    treeEntries.append(
+                        GitHubCreateTreeRequest.Entry(path: change.path, sha: nil, isDelete: true)
+                    )
+                }
+            }
+
+            let createdTree = try await client.createTree(
+                owner: request.owner,
+                repo: request.repo,
+                requestBody: GitHubCreateTreeRequest(base_tree: request.baseTreeSHA, tree: treeEntries)
+            )
+            let createdCommit = try await client.createCommit(
+                owner: request.owner,
+                repo: request.repo,
+                message: trimmedCommitMessage,
+                treeSHA: createdTree.sha,
+                parentCommitSHA: request.baseCommitSHA
+            )
+            _ = try await client.createRef(
+                owner: request.owner,
+                repo: request.repo,
+                branchName: normalizedBranchName,
+                commitSHA: createdCommit.sha
+            )
+
+            let createdCount = request.changes.filter { $0.operation == .create }.count
+            let updatedCount = request.changes.filter { $0.operation == .update }.count
+            let deletedCount = request.changes.filter { $0.operation == .delete }.count
+
+            Self.logger.notice("GitHub write succeeded for \(request.repositoryFullName, privacy: .public) branch=\(normalizedBranchName, privacy: .public) commit=\(self.shortSHA(createdCommit.sha), privacy: .public) created=\(createdCount, privacy: .public) updated=\(updatedCount, privacy: .public) deleted=\(deletedCount, privacy: .public)")
+
+            return GitHubWriteResult(
+                status: "success",
+                owner: request.owner,
+                repo: request.repo,
+                base_ref: request.resolvedBaseRef,
+                branch_name: normalizedBranchName,
+                branch_ref: "refs/heads/\(normalizedBranchName)",
+                branch_url: request.repositoryHTMLURL + "/tree/\(normalizedBranchName.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? normalizedBranchName)",
+                commit_message: trimmedCommitMessage,
+                commit_sha: createdCommit.sha,
+                commit_url: createdCommit.html_url,
+                changed_files: request.changes.count,
+                created_count: createdCount,
+                updated_count: updatedCount,
+                deleted_count: deletedCount
+            )
+        } catch {
+            Self.logger.error("GitHub write execution failed for \(request.repositoryFullName, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            throw error
         }
-
-        let createdTree = try await client.createTree(
-            owner: request.owner,
-            repo: request.repo,
-            requestBody: GitHubCreateTreeRequest(base_tree: request.baseTreeSHA, tree: treeEntries)
-        )
-        let createdCommit = try await client.createCommit(
-            owner: request.owner,
-            repo: request.repo,
-            message: trimmedCommitMessage,
-            treeSHA: createdTree.sha,
-            parentCommitSHA: request.baseCommitSHA
-        )
-        _ = try await client.createRef(
-            owner: request.owner,
-            repo: request.repo,
-            branchName: normalizedBranchName,
-            commitSHA: createdCommit.sha
-        )
-
-        let createdCount = request.changes.filter { $0.operation == .create }.count
-        let updatedCount = request.changes.filter { $0.operation == .update }.count
-        let deletedCount = request.changes.filter { $0.operation == .delete }.count
-
-        Self.logger.info("[write] success branch=\(normalizedBranchName, privacy: .public) commitSha=\(createdCommit.sha, privacy: .public) fileCount=\(request.changes.count)")
-        return GitHubWriteResult(
-            status: "success",
-            owner: request.owner,
-            repo: request.repo,
-            base_ref: request.resolvedBaseRef,
-            branch_name: normalizedBranchName,
-            branch_ref: "refs/heads/\(normalizedBranchName)",
-            branch_url: request.repositoryHTMLURL + "/tree/\(normalizedBranchName.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? normalizedBranchName)",
-            commit_message: trimmedCommitMessage,
-            commit_sha: createdCommit.sha,
-            commit_url: createdCommit.html_url,
-            changed_files: request.changes.count,
-            created_count: createdCount,
-            updated_count: updatedCount,
-            deleted_count: deletedCount
-        )
     }
 
     // MARK: - Tool Implementations
@@ -374,6 +388,7 @@ final class GitHubConnector: Connector, @unchecked Sendable {
         struct Args: Decodable { var owner: String; var repo: String; var path: String?; var ref: String? }
         let args = try decodeArgs(Args.self, from: argsData)
         let items = try await client.getRepoContents(owner: args.owner, repo: args.repo, path: args.path ?? "", ref: args.ref)
+        Self.logger.debug("Read GitHub repo contents for \(args.owner, privacy: .public)/\(args.repo, privacy: .public) ref=\(args.ref ?? "<default>", privacy: .public) path=\(self.displayPath(args.path), privacy: .public) itemCount=\(items.count, privacy: .public)")
         let result: [[String: String]] = items.map(\.summary)
         return try encodeResult(["items": result])
     }
@@ -388,6 +403,7 @@ final class GitHubConnector: Connector, @unchecked Sendable {
         struct Args: Decodable { var path: String? }
         let args = try decodeArgs(Args.self, from: argsData)
         let items = try await client.getRepoContents(owner: owner, repo: repo, path: args.path ?? "", ref: ref)
+        Self.logger.debug("Read GitHub repo contents for \(owner, privacy: .public)/\(repo, privacy: .public) ref=\(ref, privacy: .public) path=\(self.displayPath(args.path), privacy: .public) itemCount=\(items.count, privacy: .public)")
         let result: [[String: String]] = items.map(\.summary)
         return try encodeResult(["items": result])
     }
@@ -430,6 +446,7 @@ final class GitHubConnector: Connector, @unchecked Sendable {
             truncated: tree.truncated == true || matchingEntries.count > limitedEntries.count,
             entries: limitedEntries
         )
+        Self.logger.debug("Read GitHub repo tree for \(repositoryFullName, privacy: .public) branch=\(ref, privacy: .public) prefix=\(pathPrefix ?? "/", privacy: .public) entryType=\(entryFilter.rawValue, privacy: .public) returned=\(result.returned_count, privacy: .public) total=\(result.total_matching_count, privacy: .public) truncated=\(result.truncated, privacy: .public)")
         return try encodeResult(result)
     }
 
@@ -438,18 +455,19 @@ final class GitHubConnector: Connector, @unchecked Sendable {
         let args = try decodeArgs(Args.self, from: argsData)
         let file = try await client.getFileContent(owner: args.owner, repo: args.repo, path: args.path, ref: args.ref)
         var result: [String: String] = [
-            "name": file.name,
             "path": file.path,
             "size": "\(file.size)"
         ]
         if let decoded = file.decodedContent {
-            if decoded.count > 50_000 {
-                result["content"] = String(decoded.prefix(50_000)) + "\n\n[Content truncated at 50,000 characters]"
+            if decoded.count > Self.maxReturnedFileContentCharacters {
+                result["content"] = String(decoded.prefix(Self.maxReturnedFileContentCharacters)) + "\n\n[Content truncated at \(Self.maxReturnedFileContentCharacters) characters]"
                 result["truncated"] = "true"
             } else {
                 result["content"] = decoded
             }
         }
+        let wasTruncated = result["truncated"] == "true"
+        Self.logger.debug("Read GitHub file for \(args.owner, privacy: .public)/\(args.repo, privacy: .public) ref=\(args.ref ?? "<default>", privacy: .public) path=\(args.path, privacy: .public) size=\(file.size, privacy: .public) truncated=\(wasTruncated, privacy: .public)")
         return try encodeResult(result)
     }
 
@@ -464,18 +482,65 @@ final class GitHubConnector: Connector, @unchecked Sendable {
         let args = try decodeArgs(Args.self, from: argsData)
         let file = try await client.getFileContent(owner: owner, repo: repo, path: args.path, ref: ref)
         var result: [String: String] = [
-            "name": file.name,
             "path": file.path,
             "size": "\(file.size)"
         ]
         if let decoded = file.decodedContent {
-            if decoded.count > 50_000 {
-                result["content"] = String(decoded.prefix(50_000)) + "\n\n[Content truncated at 50,000 characters]"
+            if decoded.count > Self.maxReturnedFileContentCharacters {
+                result["content"] = String(decoded.prefix(Self.maxReturnedFileContentCharacters)) + "\n\n[Content truncated at \(Self.maxReturnedFileContentCharacters) characters]"
                 result["truncated"] = "true"
             } else {
                 result["content"] = decoded
             }
         }
+        let wasTruncated = result["truncated"] == "true"
+        Self.logger.debug("Read GitHub file for \(owner, privacy: .public)/\(repo, privacy: .public) ref=\(ref, privacy: .public) path=\(args.path, privacy: .public) size=\(file.size, privacy: .public) truncated=\(wasTruncated, privacy: .public)")
+        return try encodeResult(result)
+    }
+
+    private func executeGetFileTail(
+        client: GitHubAPIClient,
+        owner: String,
+        repo: String,
+        ref: String,
+        argsData: Data
+    ) async throws -> String {
+        struct Args: Decodable {
+            var path: String
+            var max_lines: Int?
+        }
+
+        let args = try decodeArgs(Args.self, from: argsData)
+        let maxLines = try validateMaxTailLines(args.max_lines)
+        let file = try await client.getFileContent(owner: owner, repo: repo, path: args.path, ref: ref)
+        guard let decoded = file.decodedContent else {
+            throw ConnectorError.apiError("GitHub file content could not be decoded as UTF-8 text.")
+        }
+
+        let allLines = decoded.isEmpty ? [] : splitLines(decoded)
+        let endLine = allLines.count
+        let startIndex = max(0, endLine - maxLines)
+        let startLine = endLine == 0 ? 0 : startIndex + 1
+        let tailLines = Array(allLines.suffix(maxLines))
+        var tailContent = tailLines.joined(separator: "\n")
+        let lineCount = tailLines.count
+        var wasTruncated = startIndex > 0
+
+        if tailContent.count > Self.maxReturnedFileContentCharacters {
+            tailContent = String(tailContent.suffix(Self.maxReturnedFileContentCharacters))
+            wasTruncated = true
+        }
+
+        let result = GitHubFileTailResult(
+            path: file.path,
+            size: file.size,
+            start_line: startLine,
+            end_line: endLine,
+            line_count: lineCount,
+            content: tailContent,
+            truncated: wasTruncated
+        )
+        Self.logger.debug("Read GitHub file tail for \(owner, privacy: .public)/\(repo, privacy: .public) ref=\(ref, privacy: .public) path=\(args.path, privacy: .public) size=\(file.size, privacy: .public) lines=\(result.start_line, privacy: .public)-\(result.end_line, privacy: .public) truncated=\(result.truncated, privacy: .public)")
         return try encodeResult(result)
     }
 
@@ -759,6 +824,7 @@ final class GitHubConnector: Connector, @unchecked Sendable {
         }
 
         let normalizedChanges = try normalizeChanges(changes)
+        Self.logger.notice("GitHub write preflight started for \(owner, privacy: .public)/\(repo, privacy: .public) requestedBase=\(requestedBaseRef ?? "<auto>", privacy: .public) requestedBranch=\(requestedBranchName ?? "<auto>", privacy: .public) normalizedChangeCount=\(normalizedChanges.count, privacy: .public)")
         let client = try makeClient()
         let repository = try await client.getRepository(owner: owner, repo: repo)
         let baseResolution = try await resolveBaseRef(
@@ -877,7 +943,7 @@ final class GitHubConnector: Connector, @unchecked Sendable {
             }
         }
 
-        return GitHubWriteRequest(
+        let request = GitHubWriteRequest(
             owner: owner,
             repo: repo,
             repositoryFullName: repository.full_name,
@@ -890,6 +956,8 @@ final class GitHubConnector: Connector, @unchecked Sendable {
             changes: normalizedChanges,
             diffPreviews: diffPreviews
         )
+        Self.logger.notice("GitHub write preflight completed for \(request.repositoryFullName, privacy: .public) resolvedBase=\(request.resolvedBaseRef, privacy: .public) proposedBranch=\(request.proposedBranchName, privacy: .public) baseCommit=\(self.shortSHA(request.baseCommitSHA), privacy: .public) diffPreviewCount=\(request.diffPreviews.count, privacy: .public)")
+        return request
     }
 
     private func normalizeChanges(_ changes: [GitHubFileChange]) throws -> [GitHubFileChange] {
@@ -1030,6 +1098,34 @@ final class GitHubConnector: Connector, @unchecked Sendable {
             throw ConnectorError.invalidArguments("max_entries must be 1000 or less.")
         }
         return resolved
+    }
+
+    private func validateMaxTailLines(_ rawValue: Int?) throws -> Int {
+        let resolved = rawValue ?? 80
+        guard resolved > 0 else {
+            throw ConnectorError.invalidArguments("max_lines must be greater than 0.")
+        }
+        guard resolved <= 300 else {
+            throw ConnectorError.invalidArguments("max_lines must be 300 or less.")
+        }
+        return resolved
+    }
+
+    private func summarizeChanges(_ changes: [GitHubFileChange]) -> String {
+        changes
+            .map { "\($0.operation.rawValue):\($0.path)" }
+            .joined(separator: ", ")
+    }
+
+    private func shortSHA(_ sha: String) -> String {
+        String(sha.prefix(12))
+    }
+
+    private func displayPath(_ path: String?) -> String {
+        guard let path, !path.isEmpty else {
+            return "/"
+        }
+        return path
     }
 
     private func makeRepoTreeEntry(from entry: GitHubTreeResponse.Entry) -> GitHubRepoTreeEntry? {
@@ -1387,7 +1483,7 @@ final class GitHubConnector: Connector, @unchecked Sendable {
     private func gitHubWriteArgumentsExampleSchema(for mode: GitHubWriteArgumentsMode) -> JSONSchemaValue {
         var example: [String: JSONSchemaValue] = [
             "branch_name": .string("feature/update-config"),
-            "commit_message": .string("Update config and add tests"),
+            "commit_message": .string("Update config, tests, and release notes"),
             "changes": .array([
                 .object([
                     "path": .string("Sources/Config.swift"),
@@ -1398,6 +1494,11 @@ final class GitHubConnector: Connector, @unchecked Sendable {
                     "path": .string("Tests/ConfigTests.swift"),
                     "operation": .string("create"),
                     "content": .string("import XCTest\n@testable import App\n\nfinal class ConfigTests: XCTestCase {\n    func testVersion() {\n        XCTAssertEqual(Config().version, 2)\n    }\n}\n")
+                ]),
+                .object([
+                    "path": .string("Docs/ReleaseNotes.md"),
+                    "operation": .string("update"),
+                    "content": .string("# Release Notes\n\n- Added the new config version.\n")
                 ])
             ])
         ]
@@ -1414,9 +1515,9 @@ final class GitHubConnector: Connector, @unchecked Sendable {
     private func gitHubWriteArgumentsExample(for mode: GitHubWriteArgumentsMode) -> String {
         switch mode {
         case .freeform:
-            return #"{"owner":"octo","repo":"demo","base_ref":"main","branch_name":"feature/update-config","commit_message":"Update config and add tests","changes":[{"path":"Sources/Config.swift","operation":"update","content":"struct Config {\n    let version = 2\n}\n"},{"path":"Tests/ConfigTests.swift","operation":"create","content":"import XCTest\n"}]}"#
+            return ##"{"owner":"octo","repo":"demo","base_ref":"main","branch_name":"feature/update-config","commit_message":"Update config, tests, and release notes","changes":[{"path":"Sources/Config.swift","operation":"update","content":"struct Config {\n    let version = 2\n}\n"},{"path":"Tests/ConfigTests.swift","operation":"create","content":"import XCTest\n"},{"path":"Docs/ReleaseNotes.md","operation":"update","content":"# Release Notes\n\n- Added the new config version.\n"}]}"##
         case .selectedContext:
-            return #"{"branch_name":"feature/update-config","commit_message":"Update config and add tests","changes":[{"path":"Sources/Config.swift","operation":"update","content":"struct Config {\n    let version = 2\n}\n"},{"path":"Tests/ConfigTests.swift","operation":"create","content":"import XCTest\n"}]}"#
+            return ##"{"branch_name":"feature/update-config","commit_message":"Update config, tests, and release notes","changes":[{"path":"Sources/Config.swift","operation":"update","content":"struct Config {\n    let version = 2\n}\n"},{"path":"Tests/ConfigTests.swift","operation":"create","content":"import XCTest\n"},{"path":"Docs/ReleaseNotes.md","operation":"update","content":"# Release Notes\n\n- Added the new config version.\n"}]}"##
         }
     }
 
@@ -1490,7 +1591,7 @@ final class GitHubConnector: Connector, @unchecked Sendable {
     private var getRepoTreeToolForSelectedContext: ToolDefinition {
         ToolDefinition(function: FunctionDefinitionBody(
             name: "github_get_repo_tree",
-            description: "Recursively list nested paths in the currently selected GitHub repository and branch. Use this first to discover exact repo-relative file paths, then call github_get_file_content for specific files, and only then prepare github_commit_file_changes to create, update, or delete files. You can also call github_get_repo_contents(path: ...) afterward for focused directory browsing.",
+            description: "Recursively list nested paths in the currently selected GitHub repository and branch. Use this once at the start of a repo task to discover exact repo-relative file paths, then reuse the earlier tree result instead of rescanning the same subtree. After that, call github_get_file_content or github_get_file_tail for specific files, and batch requested file edits into one github_commit_file_changes call when possible. You can also call github_get_repo_contents(path: ...) afterward for focused directory browsing.",
             parameters: .object([
                 "type": .string("object"),
                 "properties": .object([
@@ -1544,13 +1645,34 @@ final class GitHubConnector: Connector, @unchecked Sendable {
     private var getFileContentToolForSelectedContext: ToolDefinition {
         ToolDefinition(function: FunctionDefinitionBody(
             name: "github_get_file_content",
-            description: "Read the content of a file from the currently selected GitHub repository and branch.",
+            description: "Read the full content of a file from the currently selected GitHub repository and branch. Prefer this for small or medium files. If the result returns truncated=true, or if you need to inspect or append near the end of a large file, switch to github_get_file_tail instead of rereading the same path.",
             parameters: .object([
                 "type": .string("object"),
                 "properties": .object([
                     "path": .object([
                         "type": .string("string"),
                         "description": .string("File path within the selected repository")
+                    ])
+                ]),
+                "required": .array([.string("path")])
+            ])
+        ))
+    }
+
+    private var getFileTailToolForSelectedContext: ToolDefinition {
+        ToolDefinition(function: FunctionDefinitionBody(
+            name: "github_get_file_tail",
+            description: "Read the last lines of a file from the currently selected GitHub repository and branch. Prefer this when appending comments, inspecting file endings, or recovering after github_get_file_content returned truncated=true for a large file.",
+            parameters: .object([
+                "type": .string("object"),
+                "properties": .object([
+                    "path": .object([
+                        "type": .string("string"),
+                        "description": .string("File path within the selected repository")
+                    ]),
+                    "max_lines": .object([
+                        "type": .string("integer"),
+                        "description": .string("Number of lines to return from the end of the file (default 80, max 300).")
                     ])
                 ]),
                 "required": .array([.string("path")])
@@ -1753,7 +1875,7 @@ final class GitHubConnector: Connector, @unchecked Sendable {
     private var createBranchAndCommitChangesToolForSelectedContext: ToolDefinition {
         ToolDefinition(function: FunctionDefinitionBody(
             name: "github_commit_file_changes",
-            description: "Commit file changes to a new branch from the currently selected GitHub base branch. Supports three operations per file: 'create' (new file), 'update' (replace an existing file — read it first with github_get_file_content, then provide the complete modified content), and 'delete' (remove a file). Do not send owner, repo, or base_ref here; the selected repository and base branch are already known for this chat. Put path, operation, and optional content inside each changes[] item, where each item represents one file. Requires explicit user approval before any write occurs.",
+            description: "Commit file changes to a new branch from the currently selected GitHub base branch. Supports three operations per file: 'create' (new file), 'update' (replace an existing file — read it first with github_get_file_content or github_get_file_tail, then provide the complete modified content), and 'delete' (remove a file). One github_commit_file_changes call can update multiple files, and should include all requested edits in changes[] when possible. Do not send owner, repo, or base_ref here; the selected repository and base branch are already known for this chat. Put path, operation, and optional content inside each changes[] item, where each item represents one file. Requires explicit user approval before any write occurs.",
             parameters: gitHubWriteArgumentsSchema(for: .selectedContext)
         ))
     }

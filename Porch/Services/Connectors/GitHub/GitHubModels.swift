@@ -291,6 +291,16 @@ struct GitHubRepoTreeResult: Encodable, Equatable, Sendable {
     var entries: [GitHubRepoTreeEntry]
 }
 
+struct GitHubFileTailResult: Encodable, Equatable, Sendable {
+    var path: String
+    var size: Int
+    var start_line: Int
+    var end_line: Int
+    var line_count: Int
+    var content: String
+    var truncated: Bool
+}
+
 struct GitHubBlobResponse: Decodable {
     var sha: String
 }
