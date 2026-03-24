@@ -115,12 +115,26 @@ struct OpenAIChatRequestDescriptor: Equatable {
     var messages: [OpenAIChatMessage]
     var parameters: GenerationParameters
     var tools: [ToolDefinition]?
+    var toolChoice: ChatCompletionToolChoice?
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.configuration == rhs.configuration &&
         lhs.modelID == rhs.modelID &&
         lhs.messages == rhs.messages &&
-        lhs.parameters == rhs.parameters
+        lhs.parameters == rhs.parameters &&
+        lhs.toolChoice == rhs.toolChoice
+    }
+}
+
+enum ChatCompletionToolChoice: Encodable, Equatable {
+    case none
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .none:
+            try container.encode("none")
+        }
     }
 }
 
@@ -135,10 +149,11 @@ struct ChatCompletionRequestBody: Encodable {
     var presence_penalty: Double
     var stop: [String]?
     var tools: [ToolDefinition]?
+    var tool_choice: ChatCompletionToolChoice?
 
     enum CodingKeys: String, CodingKey {
         case model, messages, stream, temperature, max_tokens, top_p
-        case frequency_penalty, presence_penalty, stop, tools
+        case frequency_penalty, presence_penalty, stop, tools, tool_choice
     }
 
     func encode(to encoder: Encoder) throws {
@@ -153,6 +168,7 @@ struct ChatCompletionRequestBody: Encodable {
         try container.encode(presence_penalty, forKey: .presence_penalty)
         try container.encodeIfPresent(stop, forKey: .stop)
         try container.encodeIfPresent(tools, forKey: .tools)
+        try container.encodeIfPresent(tool_choice, forKey: .tool_choice)
     }
 }
 

@@ -294,7 +294,8 @@ actor OpenAICompatibleClient {
             frequency_penalty: descriptor.parameters.frequencyPenalty,
             presence_penalty: descriptor.parameters.presencePenalty,
             stop: descriptor.parameters.stopSequences.isEmpty ? nil : descriptor.parameters.stopSequences,
-            tools: descriptor.tools?.isEmpty == true ? nil : descriptor.tools
+            tools: descriptor.tools?.isEmpty == true ? nil : descriptor.tools,
+            tool_choice: descriptor.toolChoice
         )
         request.httpBody = try JSONEncoder().encode(body)
         return request

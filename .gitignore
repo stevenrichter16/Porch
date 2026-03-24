@@ -11,3 +11,10 @@ Packages/
 
 # macOS
 .DS_Store
+
+# Ruby / Fastlane local artifacts
+.bundle/
+bin/
+vendor/bundle/
+fastlane/README.md
+fastlane/report.xml

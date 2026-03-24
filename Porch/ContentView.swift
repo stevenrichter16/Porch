@@ -31,7 +31,8 @@ struct ContentView: View {
                         },
                         onOpenSettings: { isShowingSettings = true },
                         onRenameChat: renameChat(_:to:),
-                        onDeleteChat: deleteChat(_:)
+                        onDeleteChat: deleteChat(_:),
+                        onDeleteChats: deleteChats(_:)
                     )
                     } detail: {
                         if settings.isReadyForChat {
@@ -103,11 +104,21 @@ struct ContentView: View {
     }
 
     private func deleteChat(_ chat: ChatThread) {
-        let nextSelectionID = chats.first { $0.id != chat.id }?.id
-        if selectedChatID == chat.id {
+        deleteChats([chat])
+    }
+
+    private func deleteChats(_ chatsToDelete: [ChatThread]) {
+        let idsToDelete = Set(chatsToDelete.map(\.id))
+        guard !idsToDelete.isEmpty else { return }
+
+        let nextSelectionID = chats.first { !idsToDelete.contains($0.id) }?.id
+        if let currentSelectedChatID = selectedChatID, idsToDelete.contains(currentSelectedChatID) {
             selectedChatID = nextSelectionID
         }
-        modelContext.delete(chat)
+
+        for chat in chatsToDelete {
+            modelContext.delete(chat)
+        }
         try? modelContext.save()
     }
 

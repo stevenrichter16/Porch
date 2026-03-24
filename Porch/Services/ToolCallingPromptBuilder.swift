@@ -30,6 +30,8 @@ enum ToolCallingPromptBuilder {
         - You may call multiple tools in one response by outputting multiple <tool_call> blocks.
         - The "arguments" value must be a JSON object matching the tool's parameters.
         - Only call tools that are listed below.
+        - After a tool result observation is provided, either answer the user's question directly or output another <tool_call> only if more evidence is genuinely required.
+        - If a system message tells you to answer from prior evidence or says tools are disabled, do NOT output any more <tool_call> blocks.
         """)
 
         // Tool listing
@@ -57,7 +59,8 @@ enum ToolCallingPromptBuilder {
         To edit an existing file, first read it with github_get_file_content, then call \
         github_commit_file_changes with operation "update" and the complete new file content. \
         To add a new file, use operation "create". To remove a file, use operation "delete" with no content. \
-        You can mix create, update, and delete operations in a single commit.
+        You can mix create, update, and delete operations in a single commit. \
+        If a github_get_file_content result says truncated=true, prefer github_get_file_lines or github_get_file_tail instead of rereading or searching again.
         """
     }
 
@@ -90,14 +93,24 @@ enum ToolCallingPromptBuilder {
             return """
             Example conversation:
 
-            User: What's in the README?
-            Assistant: I'll read the README file for you.
+            User: From this repo tell me how the GitHub connector works
+            Assistant:
 
             <tool_call>
-            {"name": "github_get_file_content", "arguments": {"path": "README.md"}}
+            {"name": "github_search_paths", "arguments": {"query": "github connector"}}
             </tool_call>
 
-            [After receiving the tool result, the assistant continues with the file content.]
+            [Tool result observation is provided.]
+
+            Assistant:
+
+            <tool_call>
+            {"name": "github_get_file_content", "arguments": {"path": "Porch/Services/Connectors/GitHub/GitHubConnector.swift"}}
+            </tool_call>
+
+            [Tool result observation is provided.]
+
+            Assistant: The GitHub connector is centered in GitHubConnector.swift, which defines the GitHub tool surface and coordinates execution. It uses GitHubAPIClient.swift for HTTP calls and GitHubModels.swift for typed request/response models.
             """
         } else {
             return """

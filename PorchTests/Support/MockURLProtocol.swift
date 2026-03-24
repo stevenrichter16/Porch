@@ -174,6 +174,9 @@ final class MockURLProtocol: URLProtocol {
             }
 
             if let completionError = response.completionError {
+                // Give URLSession's async byte consumer a chance to drain the final chunk
+                // before the terminal error closes the stream.
+                await Task.yield()
                 completeIfNeeded(with: completionError)
             } else {
                 finishIfNeeded()

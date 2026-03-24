@@ -10,51 +10,122 @@ struct ChatListView: View {
     let onOpenSettings: () -> Void
     let onRenameChat: (ChatThread, String) -> Void
     let onDeleteChat: (ChatThread) -> Void
+    let onDeleteChats: ([ChatThread]) -> Void
 
     @State private var chatToRename: ChatThread?
     @State private var renameText = ""
     @State private var chatToDelete: ChatThread?
+    @State private var selectedChatIDs = Set<UUID>()
+    @State private var isSelectingChats = false
     @State private var isShowingRenameAlert = false
     @State private var isShowingDeleteDialog = false
+    @State private var isShowingBulkDeleteDialog = false
 
     var body: some View {
         chatList
     }
 
+    @ViewBuilder
     private var chatList: some View {
-        List(selection: $selectedChatID) {
-            chatListContent
-        }
-        .scrollContentBackground(.hidden)
-        .background(PorchTheme.chatBackground)
-        .tint(PorchTheme.accent)
-        .navigationTitle("Porch")
-        .toolbar { toolbarContent }
-        .alert("Rename Chat", isPresented: $isShowingRenameAlert, presenting: chatToRename) { chat in
-            TextField("Chat name", text: $renameText)
-            Button("Save") {
-                onRenameChat(chat, renameText)
-                chatToRename = nil
+        if isSelectingChats {
+            List(selection: $selectedChatIDs) {
+                chatListContent
             }
-            Button("Cancel", role: .cancel) {
-                chatToRename = nil
+            .environment(\.editMode, .constant(.active))
+            .scrollContentBackground(.hidden)
+            .background(PorchTheme.chatBackground)
+            .tint(PorchTheme.accent)
+            .navigationTitle("Porch")
+            .toolbar { toolbarContent }
+            .alert("Rename Chat", isPresented: $isShowingRenameAlert, presenting: chatToRename) { chat in
+                TextField("Chat name", text: $renameText)
+                Button("Save") {
+                    onRenameChat(chat, renameText)
+                    chatToRename = nil
+                }
+                Button("Cancel", role: .cancel) {
+                    chatToRename = nil
+                }
             }
-        }
-        .confirmationDialog(
-            "Delete this chat?",
-            isPresented: $isShowingDeleteDialog,
-            titleVisibility: .visible,
-            presenting: chatToDelete
-        ) { chat in
-            Button("Delete", role: .destructive) {
-                onDeleteChat(chat)
-                chatToDelete = nil
+            .confirmationDialog(
+                "Delete this chat?",
+                isPresented: $isShowingDeleteDialog,
+                titleVisibility: .visible,
+                presenting: chatToDelete
+            ) { chat in
+                Button("Delete", role: .destructive) {
+                    onDeleteChat(chat)
+                    chatToDelete = nil
+                }
+                Button("Cancel", role: .cancel) {
+                    chatToDelete = nil
+                }
+            } message: { _ in
+                Text("This removes the conversation and its messages from the device.")
             }
-            Button("Cancel", role: .cancel) {
-                chatToDelete = nil
+            .confirmationDialog(
+                bulkDeleteTitle,
+                isPresented: $isShowingBulkDeleteDialog,
+                titleVisibility: .visible
+            ) {
+                Button(bulkDeleteActionTitle, role: .destructive) {
+                    let chatsToDelete = chats.filter { selectedChatIDs.contains($0.id) }
+                    onDeleteChats(chatsToDelete)
+                    exitSelectionMode()
+                }
+                Button("Cancel", role: .cancel) { }
+            } message: {
+                Text("This removes the selected conversations and their messages from the device.")
             }
-        } message: { _ in
-            Text("This removes the conversation and its messages from the device.")
+        } else {
+            List(selection: $selectedChatID) {
+                chatListContent
+            }
+            .scrollContentBackground(.hidden)
+            .background(PorchTheme.chatBackground)
+            .tint(PorchTheme.accent)
+            .navigationTitle("Porch")
+            .toolbar { toolbarContent }
+            .alert("Rename Chat", isPresented: $isShowingRenameAlert, presenting: chatToRename) { chat in
+                TextField("Chat name", text: $renameText)
+                Button("Save") {
+                    onRenameChat(chat, renameText)
+                    chatToRename = nil
+                }
+                Button("Cancel", role: .cancel) {
+                    chatToRename = nil
+                }
+            }
+            .confirmationDialog(
+                "Delete this chat?",
+                isPresented: $isShowingDeleteDialog,
+                titleVisibility: .visible,
+                presenting: chatToDelete
+            ) { chat in
+                Button("Delete", role: .destructive) {
+                    onDeleteChat(chat)
+                    chatToDelete = nil
+                }
+                Button("Cancel", role: .cancel) {
+                    chatToDelete = nil
+                }
+            } message: { _ in
+                Text("This removes the conversation and its messages from the device.")
+            }
+            .confirmationDialog(
+                bulkDeleteTitle,
+                isPresented: $isShowingBulkDeleteDialog,
+                titleVisibility: .visible
+            ) {
+                Button(bulkDeleteActionTitle, role: .destructive) {
+                    let chatsToDelete = chats.filter { selectedChatIDs.contains($0.id) }
+                    onDeleteChats(chatsToDelete)
+                    exitSelectionMode()
+                }
+                Button("Cancel", role: .cancel) { }
+            } message: {
+                Text("This removes the selected conversations and their messages from the device.")
+            }
         }
     }
 
@@ -86,55 +157,84 @@ struct ChatListView: View {
                 }
             }
 
-            ToolbarItem(placement: .topBarTrailing) {
-                Menu {
-                    ForEach(availableModels) { model in
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                if isSelectingChats {
+                    Button(role: .destructive) {
+                        isShowingBulkDeleteDialog = true
+                    } label: {
+                        Image(systemName: "trash")
+                    }
+                    .disabled(selectedChatIDs.isEmpty)
+
+                    Button("Done") {
+                        exitSelectionMode()
+                    }
+                } else {
+                    if !chats.isEmpty {
                         Button {
-                            onCreateChat(model.id)
+                            enterSelectionMode()
                         } label: {
-                            Label(model.id, systemImage: "cpu")
+                            Image(systemName: "checklist")
                         }
                     }
-                } label: {
-                    Image(systemName: "square.and.pencil")
+
+                    Menu {
+                        ForEach(availableModels) { model in
+                            Button {
+                                onCreateChat(model.id)
+                            } label: {
+                                Label(model.id, systemImage: "cpu")
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "square.and.pencil")
+                    }
+                    .disabled(!isReadyForChat || availableModels.isEmpty)
                 }
-                .disabled(!isReadyForChat || availableModels.isEmpty)
             }
         }
     }
 
     private func chatRow(_ chat: ChatThread) -> some View {
-        ChatRow(chat: chat)
+        let baseRow = ChatRow(chat: chat)
             .tag(chat.id)
             .listRowBackground(PorchTheme.chatBackground)
             .listRowSeparatorTint(PorchTheme.messageDivider)
-            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                Button(role: .destructive) {
-                    presentDelete(chat)
-                } label: {
-                    Label("Delete", systemImage: "trash")
-                }
 
-                Button {
-                    presentRename(chat)
-                } label: {
-                    Label("Rename", systemImage: "pencil")
-                }
-                .tint(PorchTheme.accent)
-            }
-            .contextMenu {
-                Button {
-                    presentRename(chat)
-                } label: {
-                    Label("Rename", systemImage: "pencil")
-                }
+        if isSelectingChats {
+            return AnyView(baseRow)
+        }
 
-                Button(role: .destructive) {
-                    presentDelete(chat)
-                } label: {
-                    Label("Delete", systemImage: "trash")
+        return AnyView(
+            baseRow
+                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                    Button(role: .destructive) {
+                        presentDelete(chat)
+                    } label: {
+                        Label("Delete", systemImage: "trash")
+                    }
+
+                    Button {
+                        presentRename(chat)
+                    } label: {
+                        Label("Rename", systemImage: "pencil")
+                    }
+                    .tint(PorchTheme.accent)
                 }
-            }
+                .contextMenu {
+                    Button {
+                        presentRename(chat)
+                    } label: {
+                        Label("Rename", systemImage: "pencil")
+                    }
+
+                    Button(role: .destructive) {
+                        presentDelete(chat)
+                    } label: {
+                        Label("Delete", systemImage: "trash")
+                    }
+                }
+        )
     }
 
     private func presentRename(_ chat: ChatThread) {
@@ -146,6 +246,27 @@ struct ChatListView: View {
     private func presentDelete(_ chat: ChatThread) {
         chatToDelete = chat
         isShowingDeleteDialog = true
+    }
+
+    private func enterSelectionMode() {
+        isSelectingChats = true
+        selectedChatIDs.removeAll(keepingCapacity: false)
+    }
+
+    private func exitSelectionMode() {
+        isSelectingChats = false
+        selectedChatIDs.removeAll(keepingCapacity: false)
+        isShowingBulkDeleteDialog = false
+    }
+
+    private var bulkDeleteTitle: String {
+        let count = selectedChatIDs.count
+        return count == 1 ? "Delete 1 chat?" : "Delete \(count) chats?"
+    }
+
+    private var bulkDeleteActionTitle: String {
+        let count = selectedChatIDs.count
+        return count == 1 ? "Delete Chat" : "Delete Chats"
     }
 }
 

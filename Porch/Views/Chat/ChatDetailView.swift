@@ -84,10 +84,20 @@ struct ChatDetailView: View {
                         isShowingGitHubContextSheet = true
                     } label: {
                         Label {
-                            Text(chat.githubContext?.repo ?? "Select Repo")
-                                .font(.caption.weight(.semibold))
-                                .lineLimit(1)
-                                .truncationMode(.middle)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(chat.githubContext?.repo ?? "Select Repo")
+                                    .font(.caption.weight(.semibold))
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+
+                                if let branch = chat.githubContext?.branch {
+                                    Text(branch)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                }
+                            }
                         } icon: {
                             Image(systemName: "point.3.connected.trianglepath.dotted")
                                 .font(.caption.weight(.semibold))
@@ -154,7 +164,8 @@ struct ChatDetailView: View {
                 isRegenerateEnabled: !viewModel.isStreaming
                     && message.role == .assistant
                     && message.id == lastPersistedMessageID,
-                isEditEnabled: !viewModel.isStreaming && message.role == .user
+                isEditEnabled: !viewModel.isStreaming && message.role == .user,
+                toolActivityContext: gitHubToolActivityContext(for: message)
             )
         }
     }
@@ -172,6 +183,28 @@ struct ChatDetailView: View {
     }
 
     private var streamingBubbleModel: MessageBubbleModel? {
+        if let activity = viewModel.activeGitHubToolActivity {
+            return MessageBubbleModel(
+                id: .streaming,
+                role: .assistant,
+                content: "",
+                createdAt: nil,
+                isPartial: false,
+                finishReason: nil,
+                isStreaming: true,
+                isRegenerateEnabled: false,
+                isEditEnabled: false,
+                toolCallName: activity.toolName,
+                toolCallArguments: activity.arguments,
+                toolActivityContext: ToolActivityContext(
+                    repositoryLabel: activity.repositoryLabel,
+                    branch: activity.branch,
+                    statusLabel: activity.statusLabel,
+                    isLiveActivity: true
+                )
+            )
+        }
+
         guard viewModel.isStreaming, !viewModel.streamingText.isEmpty else {
             return nil
         }
@@ -294,6 +327,23 @@ struct ChatDetailView: View {
         .background(PorchTheme.inputFieldBackground)
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .padding(.horizontal, 18)
+    }
+
+    private func gitHubToolActivityContext(for message: ChatMessage) -> ToolActivityContext? {
+        guard
+            settings.isGitHubConnectorEnabled,
+            let toolCallName = message.toolCallName,
+            toolCallName == "multi_tool_call" || toolCallName.hasPrefix("github_")
+        else {
+            return nil
+        }
+
+        return ToolActivityContext(
+            repositoryLabel: chat.githubContext?.repositoryLabel,
+            branch: chat.githubContext?.branch,
+            statusLabel: nil,
+            isLiveActivity: false
+        )
     }
 
     private func scrollToBottom(animation: Animation? = nil) {

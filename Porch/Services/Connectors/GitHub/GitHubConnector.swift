@@ -28,6 +28,7 @@ final class GitHubConnector: Connector, @unchecked Sendable {
     private static let maxTotalContentBytes = 300_000
     private static let maxDiffPreviewCharacters = 12_000
     private static let maxReturnedFileContentCharacters = 12_000
+    private static let maxCodeSearchCandidateFiles = 40
     private static let logger = Logger(subsystem: "steven.Porch", category: "GitHubConnector")
 
     private let keychain: KeychainStoreProtocol
@@ -36,14 +37,22 @@ final class GitHubConnector: Connector, @unchecked Sendable {
     private let decoder = JSONDecoder()
     private let session: URLSession
     private let nowProvider: @Sendable () -> Date
+    private let syncCoordinator: GitHubSyncCoordinator
+
+    struct ExecutionResult {
+        var output: String
+        var validatedRepository: GitHubIndexedRepository?
+    }
 
     init(
         keychain: KeychainStoreProtocol = KeychainStore(),
         session: URLSession = .shared,
+        syncCoordinator: GitHubSyncCoordinator = GitHubSyncCoordinator(),
         nowProvider: @escaping @Sendable () -> Date = Date.init
     ) {
         self.keychain = keychain
         self.session = session
+        self.syncCoordinator = syncCoordinator
         self.nowProvider = nowProvider
     }
 
@@ -77,14 +86,24 @@ final class GitHubConnector: Connector, @unchecked Sendable {
         }
 
         return [
+            searchPathsToolForSelectedContext,
+            searchCodeToolForSelectedContext,
             getRepoContentsToolForSelectedContext,
             getRepoTreeToolForSelectedContext,
             getFileContentToolForSelectedContext,
+            getFileLinesToolForSelectedContext,
             getFileTailToolForSelectedContext,
+            listBranchesToolForSelectedContext,
+            listCommitsToolForSelectedContext,
+            compareRefsToolForSelectedContext,
             listIssuesToolForSelectedContext,
+            searchIssuesToolForSelectedContext,
             getIssueToolForSelectedContext,
             listPullRequestsToolForSelectedContext,
+            searchPullRequestsToolForSelectedContext,
             getPullRequestToolForSelectedContext,
+            getPullRequestFilesToolForSelectedContext,
+            getPullRequestDiffToolForSelectedContext,
             createBranchAndCommitChangesToolForSelectedContext
         ]
     }
@@ -122,18 +141,52 @@ final class GitHubConnector: Connector, @unchecked Sendable {
         arguments: String,
         context: GitHubChatContext
     ) async throws -> String {
+        let result = try await executeDetailed(
+            toolName: toolName,
+            arguments: arguments,
+            context: context
+        )
+        return result.output
+    }
+
+    func executeDetailed(
+        toolName: String,
+        arguments: String,
+        context: GitHubChatContext,
+        validatedRepository: GitHubIndexedRepository? = nil
+    ) async throws -> ExecutionResult {
         let client = try makeClient()
         let argsData = Data(arguments.utf8)
 
         switch toolName {
+        case "github_search_paths":
+            return try await executeSearchPaths(
+                client: client,
+                owner: context.owner,
+                repo: context.repo,
+                ref: context.branch,
+                repositoryFullName: context.repositoryLabel,
+                argsData: argsData,
+                validatedRepository: validatedRepository
+            )
+        case "github_search_code":
+            return try await executeSearchCode(
+                client: client,
+                owner: context.owner,
+                repo: context.repo,
+                ref: context.branch,
+                repositoryFullName: context.repositoryLabel,
+                argsData: argsData,
+                validatedRepository: validatedRepository
+            )
         case "github_get_repo_contents":
-            return try await executeGetRepoContents(
+            return ExecutionResult(output: try await executeGetRepoContents(
                 client: client,
                 owner: context.owner,
                 repo: context.repo,
                 ref: context.branch,
                 argsData: argsData
-            )
+            ))
         case "github_get_repo_tree":
             return try await executeGetRepoTree(
                 client: client,
@@ -141,7 +194,8 @@ final class GitHubConnector: Connector, @unchecked Sendable {
                 repo: context.repo,
                 ref: context.branch,
                 repositoryFullName: context.repositoryLabel,
-                argsData: argsData
+                argsData: argsData,
+                validatedRepository: validatedRepository
             )
         case "github_get_file_content":
             return try await executeGetFileContent(
@@ -149,7 +203,19 @@ final class GitHubConnector: Connector, @unchecked Sendable {
                 owner: context.owner,
                 repo: context.repo,
                 ref: context.branch,
-                argsData: argsData
+                repositoryFullName: context.repositoryLabel,
+                argsData: argsData,
+                validatedRepository: validatedRepository
+            )
+        case "github_get_file_lines":
+            return try await executeGetFileLines(
+                client: client,
+                owner: context.owner,
+                repo: context.repo,
+                ref: context.branch,
+                repositoryFullName: context.repositoryLabel,
+                argsData: argsData,
+                validatedRepository: validatedRepository
             )
         case "github_get_file_tail":
             return try await executeGetFileTail(
@@ -157,36 +223,87 @@ final class GitHubConnector: Connector, @unchecked Sendable {
                 owner: context.owner,
                 repo: context.repo,
                 ref: context.branch,
-                argsData: argsData
+                repositoryFullName: context.repositoryLabel,
+                argsData: argsData,
+                validatedRepository: validatedRepository
             )
+        case "github_list_branches":
+            return ExecutionResult(output: try await executeListBranches(
+                client: client,
+                owner: context.owner,
+                repo: context.repo,
+                argsData: argsData
+            ))
+        case "github_list_commits":
+            return ExecutionResult(output: try await executeListCommits(
+                client: client,
+                owner: context.owner,
+                repo: context.repo,
+                argsData: argsData
+            ))
+        case "github_compare_refs":
+            return ExecutionResult(output: try await executeCompareRefs(
+                client: client,
+                owner: context.owner,
+                repo: context.repo,
+                argsData: argsData
+            ))
         case "github_list_issues":
-            return try await executeListIssues(
+            return ExecutionResult(output: try await executeListIssues(
                 client: client,
                 owner: context.owner,
                 repo: context.repo,
                 argsData: argsData
-            )
+            ))
+        case "github_search_issues":
+            return ExecutionResult(output: try await executeSearchIssues(
+                client: client,
+                owner: context.owner,
+                repo: context.repo,
+                argsData: argsData
+            ))
         case "github_get_issue":
-            return try await executeGetIssue(
+            return ExecutionResult(output: try await executeGetIssue(
                 client: client,
                 owner: context.owner,
                 repo: context.repo,
                 argsData: argsData
-            )
+            ))
         case "github_list_pull_requests":
-            return try await executeListPullRequests(
+            return ExecutionResult(output: try await executeListPullRequests(
                 client: client,
                 owner: context.owner,
                 repo: context.repo,
                 argsData: argsData
-            )
+            ))
+        case "github_search_pull_requests":
+            return ExecutionResult(output: try await executeSearchPullRequests(
+                client: client,
+                owner: context.owner,
+                repo: context.repo,
+                argsData: argsData
+            ))
         case "github_get_pull_request":
-            return try await executeGetPullRequest(
+            return ExecutionResult(output: try await executeGetPullRequest(
                 client: client,
                 owner: context.owner,
                 repo: context.repo,
                 argsData: argsData
-            )
+            ))
+        case "github_get_pull_request_files":
+            return ExecutionResult(output: try await executeGetPullRequestFiles(
+                client: client,
+                owner: context.owner,
+                repo: context.repo,
+                argsData: argsData
+            ))
+        case "github_get_pull_request_diff":
+            return ExecutionResult(output: try await executeGetPullRequestDiff(
+                client: client,
+                owner: context.owner,
+                repo: context.repo,
+                argsData: argsData
+            ))
         case "github_commit_file_changes":
             throw ConnectorError.apiError("GitHub write tools require explicit approval before execution.")
         default:
@@ -274,6 +391,7 @@ final class GitHubConnector: Connector, @unchecked Sendable {
         branchName: String,
         commitMessage: String
     ) async throws -> GitHubWriteResult {
+        let startedAt = Date()
         do {
             guard let token = try keychain.read(account: keychainAccount), !token.isEmpty else {
                 throw ConnectorError.notConfigured("GitHub")
@@ -294,6 +412,7 @@ final class GitHubConnector: Connector, @unchecked Sendable {
                 branchName: normalizedBranchName,
                 client: client
             )
+            let afterBranchCheck = Date()
 
             var treeEntries: [GitHubCreateTreeRequest.Entry] = []
             treeEntries.reserveCapacity(request.changes.count)
@@ -316,12 +435,14 @@ final class GitHubConnector: Connector, @unchecked Sendable {
                     )
                 }
             }
+            let afterBlobPhase = Date()
 
             let createdTree = try await client.createTree(
                 owner: request.owner,
                 repo: request.repo,
                 requestBody: GitHubCreateTreeRequest(base_tree: request.baseTreeSHA, tree: treeEntries)
             )
+            let afterTreeCreate = Date()
             let createdCommit = try await client.createCommit(
                 owner: request.owner,
                 repo: request.repo,
@@ -329,18 +450,20 @@ final class GitHubConnector: Connector, @unchecked Sendable {
                 treeSHA: createdTree.sha,
                 parentCommitSHA: request.baseCommitSHA
             )
+            let afterCommitCreate = Date()
             _ = try await client.createRef(
                 owner: request.owner,
                 repo: request.repo,
                 branchName: normalizedBranchName,
                 commitSHA: createdCommit.sha
             )
+            let afterRefCreate = Date()
 
             let createdCount = request.changes.filter { $0.operation == .create }.count
             let updatedCount = request.changes.filter { $0.operation == .update }.count
             let deletedCount = request.changes.filter { $0.operation == .delete }.count
 
-            Self.logger.notice("GitHub write succeeded for \(request.repositoryFullName, privacy: .public) branch=\(normalizedBranchName, privacy: .public) commit=\(self.shortSHA(createdCommit.sha), privacy: .public) created=\(createdCount, privacy: .public) updated=\(updatedCount, privacy: .public) deleted=\(deletedCount, privacy: .public)")
+            Self.logger.notice("GitHub write succeeded for \(request.repositoryFullName, privacy: .public) branch=\(normalizedBranchName, privacy: .public) commit=\(self.shortSHA(createdCommit.sha), privacy: .public) created=\(createdCount, privacy: .public) updated=\(updatedCount, privacy: .public) deleted=\(deletedCount, privacy: .public) branchCheckMs=\(self.elapsedMilliseconds(since: startedAt, until: afterBranchCheck), privacy: .public) blobMs=\(self.elapsedMilliseconds(since: afterBranchCheck, until: afterBlobPhase), privacy: .public) treeMs=\(self.elapsedMilliseconds(since: afterBlobPhase, until: afterTreeCreate), privacy: .public) commitMs=\(self.elapsedMilliseconds(since: afterTreeCreate, until: afterCommitCreate), privacy: .public) refMs=\(self.elapsedMilliseconds(since: afterCommitCreate, until: afterRefCreate), privacy: .public) totalMs=\(self.elapsedMilliseconds(since: startedAt), privacy: .public)")
 
             return GitHubWriteResult(
                 status: "success",
@@ -384,6 +507,194 @@ final class GitHubConnector: Connector, @unchecked Sendable {
         )
     }
 
+    private func executeSearchPaths(
+        client: GitHubAPIClient,
+        owner: String,
+        repo: String,
+        ref: String,
+        repositoryFullName: String,
+        argsData: Data,
+        validatedRepository: GitHubIndexedRepository?
+    ) async throws -> ExecutionResult {
+        struct Args: Decodable {
+            var query: String
+            var max_results: Int?
+        }
+
+        let startedAt = Date()
+        let args = try decodeArgs(Args.self, from: argsData)
+        let query = args.query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else {
+            throw ConnectorError.invalidArguments("query is required.")
+        }
+        let maxResults = max(1, min(args.max_results ?? 10, 20))
+        let snapshot = try await syncCoordinator.ensureRepositoryIndex(
+            owner: owner,
+            repo: repo,
+            branch: ref,
+            repositoryFullName: repositoryFullName,
+            client: client,
+            validatedRepository: validatedRepository
+        )
+
+        let queryTokens = GitHubSearchNormalizer.tokenize(query)
+        let rankedEntries = snapshot.treeEntries
+            .map { ($0, scorePathMatch(entry: $0, query: query, queryTokens: queryTokens)) }
+            .filter { $0.1 > 0 }
+            .sorted {
+                if $0.1 == $1.1 {
+                    return $0.0.path < $1.0.path
+                }
+                return $0.1 > $1.1
+            }
+        let rerankedEntries = rerankedStateHolderPathEntries(
+            rankedEntries,
+            queryTokens: queryTokens
+        )
+        let displayEntries = preferredSearchEntries(
+            from: rerankedEntries,
+            queryTokens: queryTokens,
+            maxResults: maxResults
+        )
+        let matches = displayEntries.map { entry, score in
+            GitHubPathSearchMatch(
+                path: entry.path,
+                kind: entry.kind,
+                score: score,
+                anchor: GitHubCitationAnchor(
+                    repository: repositoryFullName,
+                    branch: ref,
+                    path: entry.path,
+                    start_line: nil,
+                    end_line: nil,
+                    source_sha: snapshot.headSHA
+                )
+            )
+        }
+
+        let result = GitHubPathSearchResult(
+            repository: repositoryFullName,
+            branch: ref,
+            query: query,
+            returned_count: matches.count,
+            total_matching_count: rerankedEntries.count,
+            results: matches
+        )
+        Self.logger.debug("Searched GitHub paths for \(repositoryFullName, privacy: .public) branch=\(ref, privacy: .public) query=\(query, privacy: .public) indexedEntries=\(snapshot.treeEntries.count, privacy: .public) returned=\(matches.count, privacy: .public) totalMatches=\(rerankedEntries.count, privacy: .public) elapsedMs=\(self.elapsedMilliseconds(since: startedAt), privacy: .public)")
+        return ExecutionResult(
+            output: try encodeResult(result),
+            validatedRepository: snapshot
+        )
+    }
+
+    private func executeSearchCode(
+        client: GitHubAPIClient,
+        owner: String,
+        repo: String,
+        ref: String,
+        repositoryFullName: String,
+        argsData: Data,
+        validatedRepository: GitHubIndexedRepository?
+    ) async throws -> ExecutionResult {
+        struct Args: Decodable {
+            var query: String
+            var max_results: Int?
+        }
+
+        let startedAt = Date()
+        let args = try decodeArgs(Args.self, from: argsData)
+        let query = args.query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else {
+            throw ConnectorError.invalidArguments("query is required.")
+        }
+        let maxResults = max(1, min(args.max_results ?? 10, 20))
+        let snapshot = try await syncCoordinator.ensureRepositoryIndex(
+            owner: owner,
+            repo: repo,
+            branch: ref,
+            repositoryFullName: repositoryFullName,
+            client: client,
+            validatedRepository: validatedRepository
+        )
+
+        var repository = snapshot
+        var scoredMatches: [ScoredCodeSearchMatch] = []
+        var searchedFiles = 0
+        let queryTokens = GitHubSearchNormalizer.tokenize(query)
+        let candidateEntries = repository.treeEntries
+            .filter { $0.kind == .file && isLikelyTextFile(path: $0.path) }
+            .map { ($0, scoreCodeSearchCandidate(entry: $0, queryTokens: queryTokens)) }
+            .filter { $0.1 > 0 }
+            .sorted {
+                if $0.1 == $1.1 {
+                    return $0.0.path < $1.0.path
+                }
+                return $0.1 > $1.1
+            }
+        let rerankedCandidateEntries = rerankedStateHolderCodeCandidates(
+            candidateEntries,
+            queryTokens: queryTokens
+        )
+        let limitedCandidates = Array(rerankedCandidateEntries.prefix(Self.maxCodeSearchCandidateFiles))
+
+        for (entry, pathRelevanceScore) in limitedCandidates {
+            do {
+                let readResult = try await syncCoordinator.readTextFile(
+                    from: repository,
+                    owner: owner,
+                    repo: repo,
+                    branch: ref,
+                    repositoryFullName: repositoryFullName,
+                    path: entry.path,
+                    client: client
+                )
+                let indexedFile = readResult.file
+                repository = readResult.repository
+                searchedFiles += 1
+                if let match = makeCodeSearchMatch(
+                    repositoryFullName: repositoryFullName,
+                    branch: ref,
+                    query: query,
+                    queryTokens: queryTokens,
+                    indexedFile: indexedFile,
+                    sourceSHA: snapshot.headSHA,
+                    pathRelevanceScore: pathRelevanceScore
+                ) {
+                    scoredMatches.append(match)
+                }
+            } catch {
+                continue
+            }
+        }
+
+        let matches = scoredMatches
+            .sorted {
+                if $0.score == $1.score {
+                    return $0.match.path < $1.match.path
+                }
+                return $0.score > $1.score
+            }
+        let rankedMatches = Array(matches)
+        let preferredMatches = preferredCodeSearchMatches(
+            from: rankedMatches,
+            queryTokens: queryTokens,
+            maxResults: maxResults
+        )
+        let result = GitHubCodeSearchResult(
+            repository: repositoryFullName,
+            branch: ref,
+            query: query,
+            returned_count: preferredMatches.count,
+            searched_files: searchedFiles,
+            results: preferredMatches
+        )
+        Self.logger.debug("Searched GitHub code for \(repositoryFullName, privacy: .public) branch=\(ref, privacy: .public) query=\(query, privacy: .public) candidateFiles=\(rerankedCandidateEntries.count, privacy: .public) scannedCandidates=\(limitedCandidates.count, privacy: .public) searchedFiles=\(searchedFiles, privacy: .public) returned=\(preferredMatches.count, privacy: .public) validationCalls=1 elapsedMs=\(self.elapsedMilliseconds(since: startedAt), privacy: .public)")
+        return ExecutionResult(
+            output: try encodeResult(result),
+            validatedRepository: repository
+        )
+    }
+
     private func executeGetRepoContents(client: GitHubAPIClient, argsData: Data) async throws -> String {
         struct Args: Decodable { var owner: String; var repo: String; var path: String?; var ref: String? }
         let args = try decodeArgs(Args.self, from: argsData)
@@ -414,22 +725,31 @@ final class GitHubConnector: Connector, @unchecked Sendable {
         repo: String,
         ref: String,
         repositoryFullName: String,
-        argsData: Data
-    ) async throws -> String {
+        argsData: Data,
+        validatedRepository: GitHubIndexedRepository?
+    ) async throws -> ExecutionResult {
         struct Args: Decodable {
             var path_prefix: String?
             var entry_type: String?
             var max_entries: Int?
         }
 
+        let startedAt = Date()
         let args = try decodeArgs(Args.self, from: argsData)
         let pathPrefix = try normalizeTreePathPrefix(args.path_prefix)
         let entryFilter = try parseTreeEntryFilter(args.entry_type)
         let maxEntries = try validateMaxTreeEntries(args.max_entries)
 
-        let tree = try await client.getRecursiveTree(owner: owner, repo: repo, refName: ref)
-        let matchingEntries = tree.tree
-            .compactMap { makeRepoTreeEntry(from: $0) }
+        let snapshot = try await syncCoordinator.ensureRepositoryIndex(
+            owner: owner,
+            repo: repo,
+            branch: ref,
+            repositoryFullName: repositoryFullName,
+            client: client,
+            validatedRepository: validatedRepository
+        )
+        let matchingEntries = snapshot.treeEntries
+            .map { GitHubRepoTreeEntry(path: $0.path, kind: $0.kind, size: $0.size) }
             .filter { entry in
                 matchesTreePrefix(entry.path, pathPrefix: pathPrefix) &&
                 matchesTreeEntryFilter(entry.kind, filter: entryFilter)
@@ -443,11 +763,17 @@ final class GitHubConnector: Connector, @unchecked Sendable {
             path_prefix: pathPrefix,
             returned_count: limitedEntries.count,
             total_matching_count: matchingEntries.count,
-            truncated: tree.truncated == true || matchingEntries.count > limitedEntries.count,
-            entries: limitedEntries
+            truncated: matchingEntries.count > limitedEntries.count,
+            entries: limitedEntries,
+            advisory: matchingEntries.isEmpty && pathPrefix != nil
+                ? "No entries matched '\(pathPrefix ?? "")' in this repository. Reuse the earlier root tree result or use github_search_paths for conceptual file names instead of scanning more missing subtrees."
+                : nil
         )
-        Self.logger.debug("Read GitHub repo tree for \(repositoryFullName, privacy: .public) branch=\(ref, privacy: .public) prefix=\(pathPrefix ?? "/", privacy: .public) entryType=\(entryFilter.rawValue, privacy: .public) returned=\(result.returned_count, privacy: .public) total=\(result.total_matching_count, privacy: .public) truncated=\(result.truncated, privacy: .public)")
-        return try encodeResult(result)
+        Self.logger.debug("Read GitHub repo tree for \(repositoryFullName, privacy: .public) branch=\(ref, privacy: .public) prefix=\(pathPrefix ?? "/", privacy: .public) entryType=\(entryFilter.rawValue, privacy: .public) indexedEntries=\(snapshot.treeEntries.count, privacy: .public) returned=\(result.returned_count, privacy: .public) total=\(result.total_matching_count, privacy: .public) truncated=\(result.truncated, privacy: .public) elapsedMs=\(self.elapsedMilliseconds(since: startedAt), privacy: .public)")
+        return ExecutionResult(
+            output: try encodeResult(result),
+            validatedRepository: snapshot
+        )
     }
 
     private func executeGetFileContent(client: GitHubAPIClient, argsData: Data) async throws -> String {
@@ -476,26 +802,130 @@ final class GitHubConnector: Connector, @unchecked Sendable {
         owner: String,
         repo: String,
         ref: String,
-        argsData: Data
-    ) async throws -> String {
+        repositoryFullName: String,
+        argsData: Data,
+        validatedRepository: GitHubIndexedRepository?
+    ) async throws -> ExecutionResult {
         struct Args: Decodable { var path: String }
+        let startedAt = Date()
         let args = try decodeArgs(Args.self, from: argsData)
-        let file = try await client.getFileContent(owner: owner, repo: repo, path: args.path, ref: ref)
+        let snapshot = try await syncCoordinator.ensureRepositoryIndex(
+            owner: owner,
+            repo: repo,
+            branch: ref,
+            repositoryFullName: repositoryFullName,
+            client: client,
+            validatedRepository: validatedRepository
+        )
+        let readResult = try await syncCoordinator.readTextFile(
+            from: snapshot,
+            owner: owner,
+            repo: repo,
+            branch: ref,
+            repositoryFullName: repositoryFullName,
+            path: args.path,
+            client: client
+        )
+        let file = readResult.file
         var result: [String: String] = [
             "path": file.path,
-            "size": "\(file.size)"
+            "size": "\(file.size)",
+            "repository": repositoryFullName,
+            "branch": ref
         ]
-        if let decoded = file.decodedContent {
-            if decoded.count > Self.maxReturnedFileContentCharacters {
-                result["content"] = String(decoded.prefix(Self.maxReturnedFileContentCharacters)) + "\n\n[Content truncated at \(Self.maxReturnedFileContentCharacters) characters]"
-                result["truncated"] = "true"
-            } else {
-                result["content"] = decoded
-            }
+        if let sha = file.sha {
+            result["source_sha"] = sha
+        }
+        if file.content.count > Self.maxReturnedFileContentCharacters {
+            result["content"] = String(file.content.prefix(Self.maxReturnedFileContentCharacters)) + "\n\n[Content truncated at \(Self.maxReturnedFileContentCharacters) characters]"
+            result["truncated"] = "true"
+        } else {
+            result["content"] = file.content
         }
         let wasTruncated = result["truncated"] == "true"
-        Self.logger.debug("Read GitHub file for \(owner, privacy: .public)/\(repo, privacy: .public) ref=\(ref, privacy: .public) path=\(args.path, privacy: .public) size=\(file.size, privacy: .public) truncated=\(wasTruncated, privacy: .public)")
-        return try encodeResult(result)
+        Self.logger.debug("Read GitHub file for \(owner, privacy: .public)/\(repo, privacy: .public) ref=\(ref, privacy: .public) path=\(args.path, privacy: .public) size=\(file.size, privacy: .public) truncated=\(wasTruncated, privacy: .public) elapsedMs=\(self.elapsedMilliseconds(since: startedAt), privacy: .public)")
+        return ExecutionResult(
+            output: try encodeResult(result),
+            validatedRepository: readResult.repository
+        )
+    }
+
+    private func executeGetFileLines(
+        client: GitHubAPIClient,
+        owner: String,
+        repo: String,
+        ref: String,
+        repositoryFullName: String,
+        argsData: Data,
+        validatedRepository: GitHubIndexedRepository?
+    ) async throws -> ExecutionResult {
+        struct Args: Decodable {
+            var path: String
+            var start_line: Int
+            var end_line: Int
+        }
+
+        let startedAt = Date()
+        let args = try decodeArgs(Args.self, from: argsData)
+        guard args.start_line > 0 else {
+            throw ConnectorError.invalidArguments("start_line must be greater than 0.")
+        }
+        guard args.end_line >= args.start_line else {
+            throw ConnectorError.invalidArguments("end_line must be greater than or equal to start_line.")
+        }
+
+        let snapshot = try await syncCoordinator.ensureRepositoryIndex(
+            owner: owner,
+            repo: repo,
+            branch: ref,
+            repositoryFullName: repositoryFullName,
+            client: client,
+            validatedRepository: validatedRepository
+        )
+        let readResult = try await syncCoordinator.readTextFile(
+            from: snapshot,
+            owner: owner,
+            repo: repo,
+            branch: ref,
+            repositoryFullName: repositoryFullName,
+            path: args.path,
+            client: client
+        )
+        let file = readResult.file
+
+        let allLines = file.content.isEmpty ? [] : splitLines(file.content)
+        let startIndex = min(max(args.start_line - 1, 0), allLines.count)
+        let endIndexExclusive = min(args.end_line, allLines.count)
+        let selectedLines = startIndex < endIndexExclusive ? Array(allLines[startIndex..<endIndexExclusive]) : []
+        var content = selectedLines.joined(separator: "\n")
+        var wasTruncated = false
+        if content.count > Self.maxReturnedFileContentCharacters {
+            content = String(content.prefix(Self.maxReturnedFileContentCharacters))
+            wasTruncated = true
+        }
+
+        let result = GitHubFileLinesResult(
+            path: file.path,
+            size: file.size,
+            start_line: selectedLines.isEmpty ? 0 : args.start_line,
+            end_line: selectedLines.isEmpty ? 0 : min(args.end_line, allLines.count),
+            line_count: selectedLines.count,
+            content: content,
+            truncated: wasTruncated,
+            anchor: GitHubCitationAnchor(
+                repository: repositoryFullName,
+                branch: ref,
+                path: file.path,
+                start_line: selectedLines.isEmpty ? nil : args.start_line,
+                end_line: selectedLines.isEmpty ? nil : min(args.end_line, allLines.count),
+                source_sha: file.sha
+            )
+        )
+        Self.logger.debug("Read GitHub file lines for \(owner, privacy: .public)/\(repo, privacy: .public) ref=\(ref, privacy: .public) path=\(args.path, privacy: .public) lines=\(result.start_line, privacy: .public)-\(result.end_line, privacy: .public) truncated=\(result.truncated, privacy: .public) elapsedMs=\(self.elapsedMilliseconds(since: startedAt), privacy: .public)")
+        return ExecutionResult(
+            output: try encodeResult(result),
+            validatedRepository: readResult.repository
+        )
     }
 
     private func executeGetFileTail(
@@ -503,21 +933,38 @@ final class GitHubConnector: Connector, @unchecked Sendable {
         owner: String,
         repo: String,
         ref: String,
-        argsData: Data
-    ) async throws -> String {
+        repositoryFullName: String,
+        argsData: Data,
+        validatedRepository: GitHubIndexedRepository?
+    ) async throws -> ExecutionResult {
         struct Args: Decodable {
             var path: String
             var max_lines: Int?
         }
 
+        let startedAt = Date()
         let args = try decodeArgs(Args.self, from: argsData)
         let maxLines = try validateMaxTailLines(args.max_lines)
-        let file = try await client.getFileContent(owner: owner, repo: repo, path: args.path, ref: ref)
-        guard let decoded = file.decodedContent else {
-            throw ConnectorError.apiError("GitHub file content could not be decoded as UTF-8 text.")
-        }
+        let snapshot = try await syncCoordinator.ensureRepositoryIndex(
+            owner: owner,
+            repo: repo,
+            branch: ref,
+            repositoryFullName: repositoryFullName,
+            client: client,
+            validatedRepository: validatedRepository
+        )
+        let readResult = try await syncCoordinator.readTextFile(
+            from: snapshot,
+            owner: owner,
+            repo: repo,
+            branch: ref,
+            repositoryFullName: repositoryFullName,
+            path: args.path,
+            client: client
+        )
+        let file = readResult.file
 
-        let allLines = decoded.isEmpty ? [] : splitLines(decoded)
+        let allLines = file.content.isEmpty ? [] : splitLines(file.content)
         let endLine = allLines.count
         let startIndex = max(0, endLine - maxLines)
         let startLine = endLine == 0 ? 0 : startIndex + 1
@@ -538,9 +985,110 @@ final class GitHubConnector: Connector, @unchecked Sendable {
             end_line: endLine,
             line_count: lineCount,
             content: tailContent,
-            truncated: wasTruncated
+            truncated: wasTruncated,
+            anchor: GitHubCitationAnchor(
+                repository: repositoryFullName,
+                branch: ref,
+                path: file.path,
+                start_line: startLine == 0 ? nil : startLine,
+                end_line: endLine == 0 ? nil : endLine,
+                source_sha: file.sha
+            )
         )
-        Self.logger.debug("Read GitHub file tail for \(owner, privacy: .public)/\(repo, privacy: .public) ref=\(ref, privacy: .public) path=\(args.path, privacy: .public) size=\(file.size, privacy: .public) lines=\(result.start_line, privacy: .public)-\(result.end_line, privacy: .public) truncated=\(result.truncated, privacy: .public)")
+        Self.logger.debug("Read GitHub file tail for \(owner, privacy: .public)/\(repo, privacy: .public) ref=\(ref, privacy: .public) path=\(args.path, privacy: .public) size=\(file.size, privacy: .public) lines=\(result.start_line, privacy: .public)-\(result.end_line, privacy: .public) truncated=\(result.truncated, privacy: .public) elapsedMs=\(self.elapsedMilliseconds(since: startedAt), privacy: .public)")
+        return ExecutionResult(
+            output: try encodeResult(result),
+            validatedRepository: readResult.repository
+        )
+    }
+
+    private func executeListBranches(
+        client: GitHubAPIClient,
+        owner: String,
+        repo: String,
+        argsData: Data
+    ) async throws -> String {
+        struct Args: Decodable { var per_page: Int? }
+        let args = try decodeArgs(Args.self, from: argsData)
+        let branches = try await client.listBranches(owner: owner, repo: repo, perPage: args.per_page ?? 100)
+        let result = GitHubBranchListResult(
+            branches: branches.map { branch in
+                var summary: [String: String] = ["name": branch.name]
+                if let sha = branch.commit?.sha {
+                    summary["sha"] = sha
+                }
+                return summary
+            }
+        )
+        return try encodeResult(result)
+    }
+
+    private func executeListCommits(
+        client: GitHubAPIClient,
+        owner: String,
+        repo: String,
+        argsData: Data
+    ) async throws -> String {
+        struct Args: Decodable { var ref: String?; var per_page: Int? }
+        let args = try decodeArgs(Args.self, from: argsData)
+        let commits = try await client.listCommits(owner: owner, repo: repo, sha: args.ref, perPage: args.per_page ?? 10)
+        return try encodeResult(GitHubCommitListResult(commits: commits.map(\.summary)))
+    }
+
+    private func executeCompareRefs(
+        client: GitHubAPIClient,
+        owner: String,
+        repo: String,
+        argsData: Data
+    ) async throws -> String {
+        struct Args: Decodable {
+            var base: String
+            var head: String
+        }
+
+        let args = try decodeArgs(Args.self, from: argsData)
+        let comparison = try await client.compareRefs(owner: owner, repo: repo, base: args.base, head: args.head)
+        let result = GitHubCompareResult(
+            base: args.base,
+            head: args.head,
+            status: comparison.status,
+            ahead_by: comparison.ahead_by,
+            behind_by: comparison.behind_by,
+            total_commits: comparison.total_commits,
+            html_url: comparison.html_url,
+            commits: comparison.commits.map {
+                var summary: [String: String] = [
+                    "sha": $0.sha,
+                    "message": $0.commit.message
+                ]
+                if let html_url = $0.html_url {
+                    summary["html_url"] = html_url
+                }
+                if let date = $0.commit.author?.date {
+                    summary["date"] = date
+                }
+                return summary
+            },
+            files: (comparison.files ?? []).map {
+                var summary: [String: String] = [
+                    "filename": $0.filename,
+                    "status": $0.status
+                ]
+                if let additions = $0.additions {
+                    summary["additions"] = "\(additions)"
+                }
+                if let deletions = $0.deletions {
+                    summary["deletions"] = "\(deletions)"
+                }
+                if let changes = $0.changes {
+                    summary["changes"] = "\(changes)"
+                }
+                if let patch = $0.patch {
+                    summary["patch"] = patch
+                }
+                return summary
+            }
+        )
         return try encodeResult(result)
     }
 
@@ -556,6 +1104,38 @@ final class GitHubConnector: Connector, @unchecked Sendable {
         let filtered = issues.filter { !$0.isPullRequest }
         let result: [[String: String]] = filtered.map(\.summary)
         return try encodeResult(["issues": result])
+    }
+
+    private func executeSearchIssues(
+        client: GitHubAPIClient,
+        owner: String,
+        repo: String,
+        argsData: Data
+    ) async throws -> String {
+        struct SearchIssuesResult: Encodable {
+            var total_count: Int
+            var issues: [[String: String]]
+        }
+
+        struct Args: Decodable {
+            var query: String
+            var per_page: Int?
+        }
+
+        let args = try decodeArgs(Args.self, from: argsData)
+        let response = try await client.searchIssues(
+            owner: owner,
+            repo: repo,
+            query: args.query,
+            includePullRequests: false,
+            perPage: args.per_page ?? 10
+        )
+        return try encodeResult(
+            SearchIssuesResult(
+                total_count: response.total_count,
+                issues: response.items.filter { !$0.isPullRequest }.map(\.summary)
+            )
+        )
     }
 
     private func executeListIssues(
@@ -644,6 +1224,72 @@ final class GitHubConnector: Connector, @unchecked Sendable {
         let args = try decodeArgs(Args.self, from: argsData)
         let pr = try await client.getPullRequest(owner: owner, repo: repo, number: args.number)
         return try encodeResult(pr.summary)
+    }
+
+    private func executeSearchPullRequests(
+        client: GitHubAPIClient,
+        owner: String,
+        repo: String,
+        argsData: Data
+    ) async throws -> String {
+        struct SearchPullRequestsResult: Encodable {
+            var total_count: Int
+            var pull_requests: [[String: String]]
+        }
+
+        struct Args: Decodable {
+            var query: String
+            var per_page: Int?
+        }
+
+        let args = try decodeArgs(Args.self, from: argsData)
+        let response = try await client.searchIssues(
+            owner: owner,
+            repo: repo,
+            query: args.query,
+            includePullRequests: true,
+            perPage: args.per_page ?? 10
+        )
+        return try encodeResult(
+            SearchPullRequestsResult(
+                total_count: response.total_count,
+                pull_requests: response.items.filter(\.isPullRequest).map(\.summary)
+            )
+        )
+    }
+
+    private func executeGetPullRequestFiles(
+        client: GitHubAPIClient,
+        owner: String,
+        repo: String,
+        argsData: Data
+    ) async throws -> String {
+        struct Args: Decodable {
+            var number: Int
+            var per_page: Int?
+        }
+
+        let args = try decodeArgs(Args.self, from: argsData)
+        let files = try await client.listPullRequestFiles(owner: owner, repo: repo, number: args.number, perPage: args.per_page ?? 100)
+        return try encodeResult(["files": files.map(\.summary)])
+    }
+
+    private func executeGetPullRequestDiff(
+        client: GitHubAPIClient,
+        owner: String,
+        repo: String,
+        argsData: Data
+    ) async throws -> String {
+        struct Args: Decodable { var number: Int }
+        let args = try decodeArgs(Args.self, from: argsData)
+        let diff = try await client.getPullRequestDiff(owner: owner, repo: repo, number: args.number)
+        let wasTruncated = diff.count > Self.maxDiffPreviewCharacters
+        let result = GitHubPullRequestDiffResult(
+            number: args.number,
+            diff: wasTruncated ? String(diff.prefix(Self.maxDiffPreviewCharacters)) + "\n\n[Diff truncated]" : diff,
+            truncated: wasTruncated
+        )
+        return try encodeResult(result)
     }
 
     // MARK: - Helpers
@@ -818,6 +1464,7 @@ final class GitHubConnector: Connector, @unchecked Sendable {
         commitMessage: String,
         changes: [GitHubFileChange]
     ) async throws -> GitHubWriteRequest {
+        let startedAt = Date()
         let trimmedCommitMessage = commitMessage.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedCommitMessage.isEmpty else {
             throw ConnectorError.invalidArguments("commit_message is required.")
@@ -827,6 +1474,7 @@ final class GitHubConnector: Connector, @unchecked Sendable {
         Self.logger.notice("GitHub write preflight started for \(owner, privacy: .public)/\(repo, privacy: .public) requestedBase=\(requestedBaseRef ?? "<auto>", privacy: .public) requestedBranch=\(requestedBranchName ?? "<auto>", privacy: .public) normalizedChangeCount=\(normalizedChanges.count, privacy: .public)")
         let client = try makeClient()
         let repository = try await client.getRepository(owner: owner, repo: repo)
+        let afterRepositoryLookup = Date()
         let baseResolution = try await resolveBaseRef(
             requestedBaseRef: requestedBaseRef,
             owner: owner,
@@ -834,6 +1482,7 @@ final class GitHubConnector: Connector, @unchecked Sendable {
             repository: repository,
             client: client
         )
+        let afterBaseResolution = Date()
 
         let proposedBranchName = try resolveProposedBranchName(
             requestedBranchName: requestedBranchName,
@@ -845,6 +1494,7 @@ final class GitHubConnector: Connector, @unchecked Sendable {
             branchName: proposedBranchName,
             client: client
         )
+        let afterBranchCheck = Date()
 
         let baseCommit = try await client.getCommit(
             owner: owner,
@@ -857,6 +1507,7 @@ final class GitHubConnector: Connector, @unchecked Sendable {
             sha: baseCommit.tree.sha,
             recursive: true
         )
+        let afterTreeLoad = Date()
 
         guard tree.truncated != true else {
             throw ConnectorError.apiError("This repository tree is too large to validate safely.")
@@ -942,6 +1593,7 @@ final class GitHubConnector: Connector, @unchecked Sendable {
                 )
             }
         }
+        let afterDiffPreviewBuild = Date()
 
         let request = GitHubWriteRequest(
             owner: owner,
@@ -956,7 +1608,7 @@ final class GitHubConnector: Connector, @unchecked Sendable {
             changes: normalizedChanges,
             diffPreviews: diffPreviews
         )
-        Self.logger.notice("GitHub write preflight completed for \(request.repositoryFullName, privacy: .public) resolvedBase=\(request.resolvedBaseRef, privacy: .public) proposedBranch=\(request.proposedBranchName, privacy: .public) baseCommit=\(self.shortSHA(request.baseCommitSHA), privacy: .public) diffPreviewCount=\(request.diffPreviews.count, privacy: .public)")
+        Self.logger.notice("GitHub write preflight completed for \(request.repositoryFullName, privacy: .public) resolvedBase=\(request.resolvedBaseRef, privacy: .public) proposedBranch=\(request.proposedBranchName, privacy: .public) baseCommit=\(self.shortSHA(request.baseCommitSHA), privacy: .public) diffPreviewCount=\(request.diffPreviews.count, privacy: .public) repoLookupMs=\(self.elapsedMilliseconds(since: startedAt, until: afterRepositoryLookup), privacy: .public) baseResolveMs=\(self.elapsedMilliseconds(since: afterRepositoryLookup, until: afterBaseResolution), privacy: .public) branchCheckMs=\(self.elapsedMilliseconds(since: afterBaseResolution, until: afterBranchCheck), privacy: .public) treeLoadMs=\(self.elapsedMilliseconds(since: afterBranchCheck, until: afterTreeLoad), privacy: .public) diffPreviewMs=\(self.elapsedMilliseconds(since: afterTreeLoad, until: afterDiffPreviewBuild), privacy: .public) totalMs=\(self.elapsedMilliseconds(since: startedAt), privacy: .public)")
         return request
     }
 
@@ -1094,10 +1746,7 @@ final class GitHubConnector: Connector, @unchecked Sendable {
         guard resolved > 0 else {
             throw ConnectorError.invalidArguments("max_entries must be greater than 0.")
         }
-        guard resolved <= 1_000 else {
-            throw ConnectorError.invalidArguments("max_entries must be 1000 or less.")
-        }
-        return resolved
+        return min(resolved, 1_000)
     }
 
     private func validateMaxTailLines(_ rawValue: Int?) throws -> Int {
@@ -1105,10 +1754,705 @@ final class GitHubConnector: Connector, @unchecked Sendable {
         guard resolved > 0 else {
             throw ConnectorError.invalidArguments("max_lines must be greater than 0.")
         }
-        guard resolved <= 300 else {
-            throw ConnectorError.invalidArguments("max_lines must be 300 or less.")
+        return min(resolved, 300)
+    }
+
+    private func scorePathMatch(entry: GitHubIndexedTreeEntry, query: String, queryTokens: [String]? = nil) -> Int {
+        let queryTokens = Array(Set(queryTokens ?? GitHubSearchNormalizer.tokenize(query))).sorted()
+        guard !queryTokens.isEmpty else {
+            return 0
         }
-        return resolved
+        let normalizedQuery = GitHubSearchNormalizer.normalizedSearchString(query)
+        let normalizedPath = normalizedSearchString(entry.path)
+        let fileName = entry.path.split(separator: "/").last.map(String.init) ?? entry.path
+        let normalizedFileName = normalizedSearchString(fileName)
+        let pathTokens = Set(searchTokens(for: entry.path))
+        let matchedTokens = queryTokens.filter { pathTokens.contains($0) }
+        let matchedDomainTokens = queryDomainTokens(in: queryTokens).filter { pathTokens.contains($0) }
+        let matchedArchitectureTokens = queryArchitectureTokens(in: queryTokens).filter { pathTokens.contains($0) }
+        let relatedTokens = relatedSearchTokens(for: queryTokens)
+        let matchedRelatedTokens = relatedTokens.filter { token in
+            pathTokens.contains(token) && !matchedTokens.contains(token)
+        }
+        let exactOrNearExactMatch =
+            normalizedPath == normalizedQuery ||
+            normalizedFileName == normalizedQuery ||
+            normalizedPath.contains(normalizedQuery) ||
+            normalizedFileName.contains(normalizedQuery)
+
+        var score = 0
+        if normalizedPath == normalizedQuery {
+            score += 380
+        }
+        if normalizedFileName == normalizedQuery {
+            score += 340
+        }
+        if normalizedPath.contains(normalizedQuery) {
+            score += 220
+        }
+        if normalizedFileName.contains(normalizedQuery) {
+            score += 240
+        }
+
+        score += matchedTokens.count * 110
+        if matchedTokens.count == queryTokens.count {
+            score += 170
+        } else if queryTokens.count > 1, matchedTokens.count >= queryTokens.count - 1 {
+            score += 70
+        }
+        score += matchedRelatedTokens.count * 35
+        score += queryAwarePathBonus(pathTokens: pathTokens, queryTokens: queryTokens)
+        score += searchFileCategoryBonus(path: entry.path, queryTokens: queryTokens, forCodeSearch: false)
+        score += directoryCohesionBonus(path: entry.path, queryTokens: queryTokens)
+
+        switch entry.kind {
+        case .file:
+            if isSourceFile(path: entry.path) {
+                score += 20
+            }
+        case .directory:
+            score -= 35
+        default:
+            break
+        }
+
+        let hasDirectSignal =
+            !matchedTokens.isEmpty ||
+            normalizedPath.contains(normalizedQuery) ||
+            normalizedFileName.contains(normalizedQuery)
+        let hasRelatedSignal = !matchedRelatedTokens.isEmpty
+        let hasArchitectureSignal =
+            !matchedArchitectureTokens.isEmpty ||
+            matchedRelatedTokens.contains { architectureSignalTokens.contains($0) }
+        let requiresDomainMatch = queryRequiresDomainArchitectureGating(queryTokens)
+
+        if requiresDomainMatch,
+           matchedDomainTokens.isEmpty,
+           !exactOrNearExactMatch {
+            return 0
+        }
+        if requiresDomainMatch,
+           !hasArchitectureSignal,
+           (!isSourceFile(path: entry.path) || !hasDirectSignal) {
+            return 0
+        }
+
+        guard hasDirectSignal || hasRelatedSignal else {
+            return 0
+        }
+
+        let minimumScore = hasDirectSignal ? 120 : 160
+        return score >= minimumScore ? score : 0
+    }
+
+    private func searchTokens(for value: String) -> [String] {
+        GitHubSearchNormalizer.tokenize(value)
+    }
+
+    private func normalizedSearchString(_ value: String) -> String {
+        GitHubSearchNormalizer.normalizedSearchString(value)
+    }
+
+    private func relatedSearchTokens(for queryTokens: [String]) -> Set<String> {
+        queryTokens.reduce(into: Set<String>()) { partialResult, token in
+            switch token {
+            case "state":
+                partialResult.formUnion(["model", "models", "viewmodel", "viewmodels", "context", "contexts", "settings", "selection", "session", "store", "stores"])
+            case "connector", "connectors":
+                partialResult.formUnion(["github", "connectors", "connector", "integration"])
+            case "github":
+                partialResult.formUnion(["connector", "connectors", "integration"])
+            default:
+                break
+            }
+        }
+    }
+
+    private func queryAwarePathBonus(pathTokens: Set<String>, queryTokens: [String]) -> Int {
+        let stateLikeTokens: Set<String> = ["model", "models", "viewmodel", "viewmodels", "context", "contexts", "settings", "selection", "session", "store", "stores"]
+        let domainTokens = queryDomainTokens(in: queryTokens)
+        var score = 0
+
+        if domainTokens.contains("connector"), !pathTokens.isDisjoint(with: ["connector", "connectors"]) {
+            score += 140
+        }
+        if (!domainTokens.isEmpty),
+           pathTokens.contains("github") {
+            score += 110
+        }
+        if queryTokens.contains("state"), !pathTokens.isDisjoint(with: stateLikeTokens) {
+            score += 90
+        }
+
+        return score
+    }
+
+    private func scoreCodeSearchCandidate(entry: GitHubIndexedTreeEntry, queryTokens: [String]) -> Int {
+        guard entry.kind == .file else {
+            return 0
+        }
+
+        let pathTokens = Set(searchTokens(for: entry.path))
+        let matchedTokenCount = queryTokens.filter { pathTokens.contains($0) }.count
+        let matchedDomainTokens = queryDomainTokens(in: queryTokens).filter { pathTokens.contains($0) }
+        let matchedArchitectureTokens = queryArchitectureTokens(in: queryTokens).filter { pathTokens.contains($0) }
+        let hasDomainArchitectureGating = queryRequiresDomainArchitectureGating(queryTokens)
+        let relatedArchitectureSignal = !pathTokens.isDisjoint(with: architectureSignalTokens)
+        var score = searchFileCategoryBonus(path: entry.path, queryTokens: queryTokens, forCodeSearch: true)
+        score += matchedTokenCount * 90
+        score += queryAwarePathBonus(pathTokens: pathTokens, queryTokens: queryTokens)
+        score += directoryCohesionBonus(path: entry.path, queryTokens: queryTokens)
+
+        if isSourceFile(path: entry.path) {
+            score += 40
+        }
+
+        if hasDomainArchitectureGating,
+           matchedDomainTokens.isEmpty,
+           !normalizedSearchString(entry.path).contains(queryTokens.joined(separator: " ")) {
+            return 0
+        }
+        if hasDomainArchitectureGating,
+           matchedArchitectureTokens.isEmpty,
+           !relatedArchitectureSignal,
+           (!isSourceFile(path: entry.path) || matchedTokenCount == 0) {
+            return 0
+        }
+
+        return max(score, 0)
+    }
+
+    private func searchFileCategoryBonus(
+        path: String,
+        queryTokens: [String],
+        forCodeSearch: Bool
+    ) -> Int {
+        let lowercasedPath = path.lowercased()
+        let docQueryTokens: Set<String> = ["doc", "docs", "documentation", "guide", "readme", "markdown", "md"]
+        let projectQueryTokens: Set<String> = ["xcode", "scheme", "project", "workspace", "pbxproj", "plist", "xcuserdata"]
+        let assetQueryTokens: Set<String> = ["asset", "assets", "icon", "color", "colors", "xcassets", "image"]
+        let queryTokenSet = Set(queryTokens)
+
+        if lowercasedPath.hasSuffix(".swift") ||
+            lowercasedPath.hasSuffix(".m") ||
+            lowercasedPath.hasSuffix(".mm") ||
+            lowercasedPath.hasSuffix(".h") ||
+            lowercasedPath.hasSuffix(".hpp") ||
+            lowercasedPath.hasSuffix(".c") ||
+            lowercasedPath.hasSuffix(".cc") ||
+            lowercasedPath.hasSuffix(".cpp") ||
+            lowercasedPath.hasSuffix(".kt") ||
+            lowercasedPath.hasSuffix(".java") ||
+            lowercasedPath.hasSuffix(".go") ||
+            lowercasedPath.hasSuffix(".rs") ||
+            lowercasedPath.hasSuffix(".js") ||
+            lowercasedPath.hasSuffix(".ts") ||
+            lowercasedPath.hasSuffix(".tsx") ||
+            lowercasedPath.hasSuffix(".jsx") {
+            return forCodeSearch ? 180 : 80
+        }
+
+        if lowercasedPath.contains("/tests/") || lowercasedPath.hasSuffix("tests.swift") {
+            return queryTokenSet.contains("test") || queryTokenSet.contains("tests")
+                ? (forCodeSearch ? 80 : 50)
+                : (forCodeSearch ? -40 : -25)
+        }
+
+        if lowercasedPath.hasSuffix(".md") || lowercasedPath.hasSuffix(".markdown") || lowercasedPath.hasSuffix(".txt") {
+            if !queryTokenSet.isDisjoint(with: docQueryTokens) {
+                return 90
+            }
+            if forCodeSearch {
+                return -80
+            }
+            return queryTokenSet.contains("state") ? -320 : -220
+        }
+
+        if lowercasedPath.contains(".xcassets/") {
+            return queryTokenSet.isDisjoint(with: assetQueryTokens)
+                ? (forCodeSearch ? -180 : -80)
+                : 50
+        }
+
+        if lowercasedPath.contains(".xcodeproj/") ||
+            lowercasedPath.contains(".xcworkspace/") ||
+            lowercasedPath.contains("/xcuserdata/") ||
+            lowercasedPath.hasSuffix(".pbxproj") {
+            return queryTokenSet.isDisjoint(with: projectQueryTokens)
+                ? (forCodeSearch ? -220 : -120)
+                : 80
+        }
+
+        if lowercasedPath.hasSuffix(".plist") || lowercasedPath.hasSuffix(".json") || lowercasedPath.hasSuffix(".yml") || lowercasedPath.hasSuffix(".yaml") {
+            return queryTokenSet.isDisjoint(with: projectQueryTokens.union(assetQueryTokens))
+                ? (forCodeSearch ? -110 : -30)
+                : 35
+        }
+
+        if lowercasedPath.hasPrefix(".") {
+            return forCodeSearch ? -140 : -60
+        }
+
+        return forCodeSearch ? 40 : 10
+    }
+
+    private func queryRequiresDomainArchitectureGating(_ queryTokens: [String]) -> Bool {
+        let domainTokens = queryDomainTokens(in: queryTokens)
+        let architectureTokens = queryArchitectureTokens(in: queryTokens)
+        return !domainTokens.isEmpty && !architectureTokens.isEmpty
+    }
+
+    private func queryDomainTokens(in queryTokens: [String]) -> Set<String> {
+        var domainTokens: Set<String> = []
+        if queryTokens.contains("github") {
+            domainTokens.insert("github")
+        }
+        if queryTokens.contains("connector") || queryTokens.contains("connectors") {
+            domainTokens.insert("connector")
+            domainTokens.insert("connectors")
+        }
+        return domainTokens
+    }
+
+    private func queryArchitectureTokens(in queryTokens: [String]) -> Set<String> {
+        let architectureTokenUniverse: Set<String> = [
+            "state", "context", "settings", "session", "selection", "store", "stores",
+            "model", "models", "viewmodel", "viewmodels"
+        ]
+        return Set(queryTokens.filter { architectureTokenUniverse.contains($0) })
+    }
+
+    private func directoryCohesionBonus(path: String, queryTokens: [String]) -> Int {
+        let components = path
+            .split(separator: "/")
+            .dropLast()
+            .map(String.init)
+        guard !components.isEmpty else {
+            return 0
+        }
+
+        let directoryTokens = Set(components.flatMap(searchTokens(for:)))
+        let matchedCount = queryTokens.filter { directoryTokens.contains($0) }.count
+        guard matchedCount > 0 else {
+            return 0
+        }
+
+        return matchedCount * 35 + (matchedCount >= 2 ? 40 : 0)
+    }
+
+    private var architectureSignalTokens: Set<String> {
+        [
+            "state", "context", "settings", "session", "selection", "store", "stores",
+            "model", "models", "viewmodel", "viewmodels"
+        ]
+    }
+
+    private func preferredSearchEntries(
+        from rankedEntries: [(GitHubIndexedTreeEntry, Int)],
+        queryTokens: [String],
+        maxResults: Int
+    ) -> [(GitHubIndexedTreeEntry, Int)] {
+        let wantsTests = Set(queryTokens).intersection(["test", "tests"]).isEmpty == false
+        guard !wantsTests else {
+            return Array(rankedEntries.prefix(maxResults))
+        }
+
+        let productionEntries = rankedEntries.filter { !isTestPath($0.0.path) }
+        if isStateHolderQuery(queryTokens) {
+            let anchorTokens = stateHolderAnchorTokens(from: productionEntries.map(\.0), queryTokens: queryTokens)
+            let clusteredEntries = productionEntries.filter {
+                shouldIncludeStateHolderResult(
+                    path: $0.0.path,
+                    anchorTokens: anchorTokens,
+                    queryTokens: queryTokens
+                )
+            }
+            if !clusteredEntries.isEmpty {
+                return Array(clusteredEntries.prefix(maxResults))
+            }
+        }
+
+        if productionEntries.count >= 5 {
+            return Array(productionEntries.prefix(maxResults))
+        }
+
+        return Array(rankedEntries.prefix(maxResults))
+    }
+
+    private func preferredCodeSearchMatches(
+        from scoredMatches: [ScoredCodeSearchMatch],
+        queryTokens: [String],
+        maxResults: Int
+    ) -> [GitHubCodeSearchMatch] {
+        let wantsTests = Set(queryTokens).intersection(["test", "tests"]).isEmpty == false
+        guard !wantsTests else {
+            return Array(scoredMatches.prefix(maxResults)).map(\.match)
+        }
+
+        let productionMatches = scoredMatches.filter { !isTestPath($0.match.path) }
+        if isStateHolderQuery(queryTokens) {
+            let anchorTokens = stateHolderAnchorTokens(from: productionMatches.map(\.match.path), queryTokens: queryTokens)
+            let clusteredMatches = productionMatches.filter {
+                shouldIncludeStateHolderResult(
+                    path: $0.match.path,
+                    anchorTokens: anchorTokens,
+                    queryTokens: queryTokens
+                )
+            }
+            if !clusteredMatches.isEmpty {
+                return Array(clusteredMatches.prefix(maxResults)).map(\.match)
+            }
+        }
+
+        let selected = productionMatches.count >= 5
+            ? Array(productionMatches.prefix(maxResults))
+            : Array(scoredMatches.prefix(maxResults))
+        return selected.map(\.match)
+    }
+
+    private func rerankedStateHolderPathEntries(
+        _ rankedEntries: [(GitHubIndexedTreeEntry, Int)],
+        queryTokens: [String]
+    ) -> [(GitHubIndexedTreeEntry, Int)] {
+        guard isStateHolderQuery(queryTokens) else {
+            return rankedEntries
+        }
+
+        let anchorTokens = stateHolderAnchorTokens(from: rankedEntries.map(\.0), queryTokens: queryTokens)
+        return rankedEntries
+            .map { entry, score in
+                (entry, score + stateHolderScoreAdjustment(path: entry.path, anchorTokens: anchorTokens, queryTokens: queryTokens))
+            }
+            .filter { $0.1 > 0 }
+            .sorted {
+                if $0.1 == $1.1 {
+                    return $0.0.path < $1.0.path
+                }
+                return $0.1 > $1.1
+            }
+    }
+
+    private func rerankedStateHolderCodeCandidates(
+        _ candidateEntries: [(GitHubIndexedTreeEntry, Int)],
+        queryTokens: [String]
+    ) -> [(GitHubIndexedTreeEntry, Int)] {
+        guard isStateHolderQuery(queryTokens) else {
+            return candidateEntries
+        }
+
+        let anchorTokens = stateHolderAnchorTokens(from: candidateEntries.map(\.0), queryTokens: queryTokens)
+        return candidateEntries
+            .map { entry, score in
+                (entry, score + stateHolderScoreAdjustment(path: entry.path, anchorTokens: anchorTokens, queryTokens: queryTokens))
+            }
+            .filter { $0.1 > 0 }
+            .sorted {
+                if $0.1 == $1.1 {
+                    return $0.0.path < $1.0.path
+                }
+                return $0.1 > $1.1
+            }
+    }
+
+    private func isStateHolderQuery(_ queryTokens: [String]) -> Bool {
+        let stateHolderTokens: Set<String> = [
+            "state", "context", "settings", "selection", "session",
+            "store", "stores", "cache", "index", "model", "models", "viewmodel", "viewmodels"
+        ]
+        return !Set(queryTokens).isDisjoint(with: stateHolderTokens)
+    }
+
+    private func stateHolderAnchorTokens(
+        from entries: [GitHubIndexedTreeEntry],
+        queryTokens: [String]
+    ) -> Set<String> {
+        for entry in entries where isSourceFile(path: entry.path) {
+            let tokens = subsystemClusterTokens(for: entry.path)
+            if !tokens.isEmpty {
+                return tokens
+            }
+        }
+        return queryDomainTokens(in: queryTokens)
+    }
+
+    private func stateHolderAnchorTokens(
+        from paths: [String],
+        queryTokens: [String]
+    ) -> Set<String> {
+        for path in paths where isSourceFile(path: path) {
+            let tokens = subsystemClusterTokens(for: path)
+            if !tokens.isEmpty {
+                return tokens
+            }
+        }
+        return queryDomainTokens(in: queryTokens)
+    }
+
+    private func shouldIncludeStateHolderResult(
+        path: String,
+        anchorTokens: Set<String>,
+        queryTokens: [String]
+    ) -> Bool {
+        if isProtocolLikePath(path) || isTestPath(path) || isDocumentationPath(path) || isAssetOrProjectPath(path) {
+            return false
+        }
+
+        let pathTokens = Set(searchTokens(for: path))
+        let sharesAnchorTokens = anchorTokens.isEmpty == false && !pathTokens.isDisjoint(with: anchorTokens)
+        let hasStateSignals = hasStateBearingSignals(path)
+
+        if isGenericViewPath(path), !hasStateSignals {
+            return false
+        }
+        if isConnectorSiblingNoise(path, anchorTokens: anchorTokens), !hasStateSignals {
+            return false
+        }
+        if sharesAnchorTokens || hasStateSignals {
+            return true
+        }
+
+        return false
+    }
+
+    private func stateHolderScoreAdjustment(
+        path: String,
+        anchorTokens: Set<String>,
+        queryTokens: [String]
+    ) -> Int {
+        let pathTokens = Set(searchTokens(for: path))
+        let sharesAnchorTokens = anchorTokens.isEmpty == false && !pathTokens.isDisjoint(with: anchorTokens)
+        let hasStateSignals = hasStateBearingSignals(path)
+        var adjustment = 0
+
+        if sharesAnchorTokens {
+            adjustment += 180
+        }
+        if hasStateSignals {
+            adjustment += 170
+        }
+        if isProtocolLikePath(path) {
+            adjustment -= 260
+        }
+        if isTestPath(path) {
+            adjustment -= 260
+        }
+        if isDocumentationPath(path) {
+            adjustment -= 280
+        }
+        if isAssetOrProjectPath(path) {
+            adjustment -= 280
+        }
+        if isConnectorSiblingNoise(path, anchorTokens: anchorTokens) {
+            adjustment -= 220
+        }
+        if isGenericViewPath(path), !hasStateSignals {
+            adjustment -= 150
+        }
+        if !anchorTokens.isEmpty,
+           !sharesAnchorTokens,
+           isSourceFile(path: path),
+           queryDomainTokens(in: queryTokens).isEmpty == false {
+            adjustment -= 80
+        }
+
+        return adjustment
+    }
+
+    private func hasStateBearingSignals(_ path: String) -> Bool {
+        let pathTokens = Set(searchTokens(for: path))
+        let stateBearingTokens: Set<String> = [
+            "state", "context", "settings", "selection", "session", "store", "stores",
+            "cache", "index", "model", "models", "viewmodel", "viewmodels"
+        ]
+        return !pathTokens.isDisjoint(with: stateBearingTokens)
+    }
+
+    private func subsystemClusterTokens(for path: String) -> Set<String> {
+        let stopwords: Set<String> = [
+            "porch", "services", "service", "connectors", "connector", "view", "views",
+            "viewmodel", "viewmodels", "model", "models", "utilities", "utility", "shared",
+            "chat", "settings", "tests", "test", "docs", "doc", "sources", "source",
+            "swift", "state", "context", "selection", "session", "store", "stores",
+            "cache", "index", "api", "client", "sheet", "protocol"
+        ]
+        return Set(searchTokens(for: path)).subtracting(stopwords)
+    }
+
+    private func isProtocolLikePath(_ path: String) -> Bool {
+        let lowercasedPath = path.lowercased()
+        return lowercasedPath.hasSuffix("protocol.swift") || lowercasedPath.contains("protocol")
+    }
+
+    private func isDocumentationPath(_ path: String) -> Bool {
+        let lowercasedPath = path.lowercased()
+        return lowercasedPath.contains("/docs/") ||
+            lowercasedPath.hasSuffix(".md") ||
+            lowercasedPath.hasSuffix(".markdown") ||
+            lowercasedPath.hasSuffix(".txt")
+    }
+
+    private func isAssetOrProjectPath(_ path: String) -> Bool {
+        let lowercasedPath = path.lowercased()
+        return lowercasedPath.contains(".xcassets/") ||
+            lowercasedPath.contains(".xcodeproj/") ||
+            lowercasedPath.contains(".xcworkspace/") ||
+            lowercasedPath.contains("/xcuserdata/") ||
+            lowercasedPath.hasSuffix(".pbxproj")
+    }
+
+    private func isGenericViewPath(_ path: String) -> Bool {
+        path.lowercased().contains("/views/")
+    }
+
+    private func isConnectorSiblingNoise(_ path: String, anchorTokens: Set<String>) -> Bool {
+        let lowercasedPath = path.lowercased()
+        guard lowercasedPath.contains("/connectors/"),
+              !anchorTokens.isEmpty else {
+            return false
+        }
+        let pathTokens = Set(searchTokens(for: path))
+        return pathTokens.isDisjoint(with: anchorTokens)
+    }
+
+    private func isTestPath(_ path: String) -> Bool {
+        let lowercasedPath = path.lowercased()
+        return lowercasedPath.contains("/tests/") || lowercasedPath.hasSuffix("tests.swift")
+    }
+
+    private func isSourceFile(path: String) -> Bool {
+        let ext = URL(fileURLWithPath: path).pathExtension.lowercased()
+        let sourceExtensions: Set<String> = [
+            "swift", "m", "mm", "h", "hpp", "c", "cc", "cpp", "kt", "java", "go", "rs", "js", "ts", "tsx", "jsx"
+        ]
+        return sourceExtensions.contains(ext)
+    }
+
+    private func isLikelyTextFile(path: String) -> Bool {
+        let ext = URL(fileURLWithPath: path).pathExtension.lowercased()
+        if ext.isEmpty { return true }
+        let supportedExtensions: Set<String> = [
+            "swift", "md", "markdown", "txt", "json", "yml", "yaml", "xml", "pbxproj",
+            "plist", "strings", "html", "css", "js", "ts", "tsx", "jsx", "sh", "rb",
+            "py", "java", "kt", "m", "mm", "h", "hpp", "c", "cc", "cpp", "go", "rs"
+        ]
+        return supportedExtensions.contains(ext)
+    }
+
+    private func makeCodeSearchMatch(
+        repositoryFullName: String,
+        branch: String,
+        query: String,
+        queryTokens: [String],
+        indexedFile: GitHubIndexedFile,
+        sourceSHA: String,
+        pathRelevanceScore: Int
+    ) -> ScoredCodeSearchMatch? {
+        let lowercasedContent = indexedFile.content.lowercased()
+        let lowercasedQuery = query.lowercased()
+        var matchRange = lowercasedContent.range(of: lowercasedQuery)
+        let matchedTokenCount = queryTokens.filter { lowercasedContent.contains($0.lowercased()) }.count
+        if matchRange == nil, !queryTokens.isEmpty,
+           queryTokens.allSatisfy({ lowercasedContent.contains($0.lowercased()) }) {
+            if let firstToken = queryTokens.first {
+                matchRange = lowercasedContent.range(of: firstToken.lowercased())
+            }
+        }
+        guard let matchRange else {
+            guard matchedTokenCount > 0 else {
+                return nil
+            }
+            guard let firstMatchedToken = queryTokens.first(where: { lowercasedContent.contains($0.lowercased()) }),
+                  let tokenRange = lowercasedContent.range(of: firstMatchedToken.lowercased()) else {
+                return nil
+            }
+            return makeCodeSearchMatch(
+                repositoryFullName: repositoryFullName,
+                branch: branch,
+                queryTokens: queryTokens,
+                indexedFile: indexedFile,
+                sourceSHA: sourceSHA,
+                pathRelevanceScore: pathRelevanceScore,
+                resolvedMatchRange: tokenRange,
+                matchedTokenCount: matchedTokenCount,
+                exactPhraseMatched: false
+            )
+        }
+
+        return makeCodeSearchMatch(
+            repositoryFullName: repositoryFullName,
+            branch: branch,
+            queryTokens: queryTokens,
+            indexedFile: indexedFile,
+            sourceSHA: sourceSHA,
+            pathRelevanceScore: pathRelevanceScore,
+            resolvedMatchRange: matchRange,
+            matchedTokenCount: matchedTokenCount,
+            exactPhraseMatched: lowercasedContent.range(of: lowercasedQuery) != nil
+        )
+    }
+
+    private func makeCodeSearchMatch(
+        repositoryFullName: String,
+        branch: String,
+        queryTokens: [String],
+        indexedFile: GitHubIndexedFile,
+        sourceSHA: String,
+        pathRelevanceScore: Int,
+        resolvedMatchRange: Range<String.Index>,
+        matchedTokenCount: Int,
+        exactPhraseMatched: Bool
+    ) -> ScoredCodeSearchMatch {
+        let lowercasedContent = indexedFile.content.lowercased()
+        let matchRange = resolvedMatchRange
+
+        let utf16Lower = lowercasedContent.utf16
+        let matchOffset = utf16Lower.distance(from: utf16Lower.startIndex, to: matchRange.lowerBound.samePosition(in: utf16Lower) ?? utf16Lower.startIndex)
+        let lines = splitLines(indexedFile.content)
+        var consumed = 0
+        var matchLineIndex = 0
+        for (index, line) in lines.enumerated() {
+            let lineLength = line.utf16.count + 1
+            if consumed + lineLength > matchOffset {
+                matchLineIndex = index
+                break
+            }
+            consumed += lineLength
+        }
+
+        let startLineIndex = max(0, matchLineIndex - 2)
+        let endLineIndex = min(lines.count - 1, matchLineIndex + 2)
+        let snippetLines = Array(lines[startLineIndex...endLineIndex])
+        var score = pathRelevanceScore
+        if exactPhraseMatched {
+            score += 240
+        }
+        score += matchedTokenCount * 45
+        if !queryTokens.isEmpty, matchedTokenCount == queryTokens.count {
+            score += 140
+        }
+
+        return ScoredCodeSearchMatch(
+            match: GitHubCodeSearchMatch(
+                path: indexedFile.path,
+                start_line: startLineIndex + 1,
+                end_line: endLineIndex + 1,
+                snippet: snippetLines.joined(separator: "\n"),
+                anchor: GitHubCitationAnchor(
+                    repository: repositoryFullName,
+                    branch: branch,
+                    path: indexedFile.path,
+                    start_line: startLineIndex + 1,
+                    end_line: endLineIndex + 1,
+                    source_sha: indexedFile.sha ?? sourceSHA
+                )
+            ),
+            score: score
+        )
+    }
+
+    private struct ScoredCodeSearchMatch {
+        var match: GitHubCodeSearchMatch
+        var score: Int
     }
 
     private func summarizeChanges(_ changes: [GitHubFileChange]) -> String {
@@ -1119,6 +2463,14 @@ final class GitHubConnector: Connector, @unchecked Sendable {
 
     private func shortSHA(_ sha: String) -> String {
         String(sha.prefix(12))
+    }
+
+    private func elapsedMilliseconds(since startedAt: Date) -> Int {
+        Int(Date().timeIntervalSince(startedAt) * 1_000)
+    }
+
+    private func elapsedMilliseconds(since startedAt: Date, until endAt: Date) -> Int {
+        Int(endAt.timeIntervalSince(startedAt) * 1_000)
     }
 
     private func displayPath(_ path: String?) -> String {
@@ -1588,10 +2940,52 @@ final class GitHubConnector: Connector, @unchecked Sendable {
         ))
     }
 
+    private var searchPathsToolForSelectedContext: ToolDefinition {
+        ToolDefinition(function: FunctionDefinitionBody(
+            name: "github_search_paths",
+            description: "Search indexed repository paths in the currently selected GitHub repository and branch. Use this first when the user refers to a file conceptually, such as 'message timestamp formatter', instead of rescanning guessed subtrees like src or Sources.",
+            parameters: .object([
+                "type": .string("object"),
+                "properties": .object([
+                    "query": .object([
+                        "type": .string("string"),
+                        "description": .string("Conceptual or exact file/path query.")
+                    ]),
+                    "max_results": .object([
+                        "type": .string("integer"),
+                        "description": .string("Maximum number of path matches to return (default 10, max 20).")
+                    ])
+                ]),
+                "required": .array([.string("query")])
+            ])
+        ))
+    }
+
+    private var searchCodeToolForSelectedContext: ToolDefinition {
+        ToolDefinition(function: FunctionDefinitionBody(
+            name: "github_search_code",
+            description: "Search indexed code and text in the currently selected GitHub repository and branch. Returns matching snippets with file paths and line anchors.",
+            parameters: .object([
+                "type": .string("object"),
+                "properties": .object([
+                    "query": .object([
+                        "type": .string("string"),
+                        "description": .string("Text query to search for in indexed files.")
+                    ]),
+                    "max_results": .object([
+                        "type": .string("integer"),
+                        "description": .string("Maximum number of code matches to return (default 10, max 20).")
+                    ])
+                ]),
+                "required": .array([.string("query")])
+            ])
+        ))
+    }
+
     private var getRepoTreeToolForSelectedContext: ToolDefinition {
         ToolDefinition(function: FunctionDefinitionBody(
             name: "github_get_repo_tree",
-            description: "Recursively list nested paths in the currently selected GitHub repository and branch. Use this once at the start of a repo task to discover exact repo-relative file paths, then reuse the earlier tree result instead of rescanning the same subtree. After that, call github_get_file_content or github_get_file_tail for specific files, and batch requested file edits into one github_commit_file_changes call when possible. You can also call github_get_repo_contents(path: ...) afterward for focused directory browsing.",
+            description: "Recursively list nested paths in the currently selected GitHub repository and branch. Use this once at the start of a repo task to discover exact repo-relative file paths, then reuse the earlier tree result instead of rescanning the same subtree. If the task refers to a file conceptually, switch to github_search_paths instead of guessing more missing subtrees.",
             parameters: .object([
                 "type": .string("object"),
                 "properties": .object([
@@ -1645,7 +3039,7 @@ final class GitHubConnector: Connector, @unchecked Sendable {
     private var getFileContentToolForSelectedContext: ToolDefinition {
         ToolDefinition(function: FunctionDefinitionBody(
             name: "github_get_file_content",
-            description: "Read the full content of a file from the currently selected GitHub repository and branch. Prefer this for small or medium files. If the result returns truncated=true, or if you need to inspect or append near the end of a large file, switch to github_get_file_tail instead of rereading the same path.",
+            description: "Read the full content of a file from the currently selected GitHub repository and branch. Prefer this for small or medium files. If the result returns truncated=true, or if you need to inspect or append near the end of a large file, switch to github_get_file_tail or github_get_file_lines instead of rereading the same path.",
             parameters: .object([
                 "type": .string("object"),
                 "properties": .object([
@@ -1655,6 +3049,35 @@ final class GitHubConnector: Connector, @unchecked Sendable {
                     ])
                 ]),
                 "required": .array([.string("path")])
+            ])
+        ))
+    }
+
+    private var getFileLinesToolForSelectedContext: ToolDefinition {
+        ToolDefinition(function: FunctionDefinitionBody(
+            name: "github_get_file_lines",
+            description: "Read a precise bounded line range from a file in the currently selected GitHub repository and branch. Prefer this for targeted edits, citations, or when you already know the approximate line window. Do not use it as a generic fallback for rereading an entire file.",
+            parameters: .object([
+                "type": .string("object"),
+                "properties": .object([
+                    "path": .object([
+                        "type": .string("string"),
+                        "description": .string("File path within the selected repository")
+                    ]),
+                    "start_line": .object([
+                        "type": .string("integer"),
+                        "description": .string("1-based inclusive starting line number.")
+                    ]),
+                    "end_line": .object([
+                        "type": .string("integer"),
+                        "description": .string("1-based inclusive ending line number.")
+                    ])
+                ]),
+                "required": .array([
+                    .string("path"),
+                    .string("start_line"),
+                    .string("end_line")
+                ])
             ])
         ))
     }
@@ -1726,6 +3149,27 @@ final class GitHubConnector: Connector, @unchecked Sendable {
                     ])
                 ]),
                 "required": .array([])
+            ])
+        ))
+    }
+
+    private var searchIssuesToolForSelectedContext: ToolDefinition {
+        ToolDefinition(function: FunctionDefinitionBody(
+            name: "github_search_issues",
+            description: "Search issues in the currently selected GitHub repository by text query.",
+            parameters: .object([
+                "type": .string("object"),
+                "properties": .object([
+                    "query": .object([
+                        "type": .string("string"),
+                        "description": .string("Issue search query text.")
+                    ]),
+                    "per_page": .object([
+                        "type": .string("integer"),
+                        "description": .string("Number of results (max 30, default 10)")
+                    ])
+                ]),
+                "required": .array([.string("query")])
             ])
         ))
     }
@@ -1822,6 +3266,27 @@ final class GitHubConnector: Connector, @unchecked Sendable {
         ))
     }
 
+    private var searchPullRequestsToolForSelectedContext: ToolDefinition {
+        ToolDefinition(function: FunctionDefinitionBody(
+            name: "github_search_pull_requests",
+            description: "Search pull requests in the currently selected GitHub repository by text query.",
+            parameters: .object([
+                "type": .string("object"),
+                "properties": .object([
+                    "query": .object([
+                        "type": .string("string"),
+                        "description": .string("Pull request search query text.")
+                    ]),
+                    "per_page": .object([
+                        "type": .string("integer"),
+                        "description": .string("Number of results (max 30, default 10)")
+                    ])
+                ]),
+                "required": .array([.string("query")])
+            ])
+        ))
+    }
+
     private var getPullRequestTool: ToolDefinition {
         ToolDefinition(function: FunctionDefinitionBody(
             name: "github_get_pull_request",
@@ -1860,6 +3325,103 @@ final class GitHubConnector: Connector, @unchecked Sendable {
                     ])
                 ]),
                 "required": .array([.string("number")])
+            ])
+        ))
+    }
+
+    private var getPullRequestFilesToolForSelectedContext: ToolDefinition {
+        ToolDefinition(function: FunctionDefinitionBody(
+            name: "github_get_pull_request_files",
+            description: "List the changed files for a pull request in the currently selected GitHub repository.",
+            parameters: .object([
+                "type": .string("object"),
+                "properties": .object([
+                    "number": .object([
+                        "type": .string("integer"),
+                        "description": .string("Pull request number")
+                    ]),
+                    "per_page": .object([
+                        "type": .string("integer"),
+                        "description": .string("Maximum number of changed files to return (max 100, default 100).")
+                    ])
+                ]),
+                "required": .array([.string("number")])
+            ])
+        ))
+    }
+
+    private var getPullRequestDiffToolForSelectedContext: ToolDefinition {
+        ToolDefinition(function: FunctionDefinitionBody(
+            name: "github_get_pull_request_diff",
+            description: "Read the unified diff for a pull request in the currently selected GitHub repository.",
+            parameters: .object([
+                "type": .string("object"),
+                "properties": .object([
+                    "number": .object([
+                        "type": .string("integer"),
+                        "description": .string("Pull request number")
+                    ])
+                ]),
+                "required": .array([.string("number")])
+            ])
+        ))
+    }
+
+    private var listBranchesToolForSelectedContext: ToolDefinition {
+        ToolDefinition(function: FunctionDefinitionBody(
+            name: "github_list_branches",
+            description: "List branches in the currently selected GitHub repository.",
+            parameters: .object([
+                "type": .string("object"),
+                "properties": .object([
+                    "per_page": .object([
+                        "type": .string("integer"),
+                        "description": .string("Maximum number of branches to return (max 100, default 100).")
+                    ])
+                ]),
+                "required": .array([])
+            ])
+        ))
+    }
+
+    private var listCommitsToolForSelectedContext: ToolDefinition {
+        ToolDefinition(function: FunctionDefinitionBody(
+            name: "github_list_commits",
+            description: "List recent commits in the currently selected GitHub repository. You can optionally provide a branch or ref to scope the commit list.",
+            parameters: .object([
+                "type": .string("object"),
+                "properties": .object([
+                    "ref": .object([
+                        "type": .string("string"),
+                        "description": .string("Optional branch, tag, or commit to list commits from.")
+                    ]),
+                    "per_page": .object([
+                        "type": .string("integer"),
+                        "description": .string("Maximum number of commits to return (max 30, default 10).")
+                    ])
+                ]),
+                "required": .array([])
+            ])
+        ))
+    }
+
+    private var compareRefsToolForSelectedContext: ToolDefinition {
+        ToolDefinition(function: FunctionDefinitionBody(
+            name: "github_compare_refs",
+            description: "Compare two refs in the currently selected GitHub repository and return commit/file diff metadata between them.",
+            parameters: .object([
+                "type": .string("object"),
+                "properties": .object([
+                    "base": .object([
+                        "type": .string("string"),
+                        "description": .string("Base branch, tag, or SHA.")
+                    ]),
+                    "head": .object([
+                        "type": .string("string"),
+                        "description": .string("Head branch, tag, or SHA.")
+                    ])
+                ]),
+                "required": .array([.string("base"), .string("head")])
             ])
         ))
     }
