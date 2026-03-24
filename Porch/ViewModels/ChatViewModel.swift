@@ -92,7 +92,11 @@ final class ChatViewModel: ObservableObject {
         modelContext.delete(lastMessage)
         let previousLatestMessage = messages.dropLast().last
         chat.applyMessageMutation(latestMessage: previousLatestMessage)
-        try? modelContext.save()
+        do {
+            try modelContext.save()
+        } catch {
+            Self.logger.error("[persist] threadId=\(self.chat.id, privacy: .public) role=regenerateDelete saveFailed error=\(error.localizedDescription, privacy: .public)")
+        }
         startStreamingConversation(parameters: settings.generationParameters)
     }
 
@@ -153,7 +157,11 @@ final class ChatViewModel: ObservableObject {
             chat.title = ChatTitleGenerator.title(for: messageText)
         }
         chat.applyMessageMutation(latestMessage: userMessage)
-        try? modelContext.save()
+        do {
+            try modelContext.save()
+        } catch {
+            Self.logger.error("[persist] threadId=\(self.chat.id, privacy: .public) role=user saveFailed error=\(error.localizedDescription, privacy: .public)")
+        }
         startStreamingConversation(parameters: parameters)
     }
 
@@ -627,7 +635,11 @@ final class ChatViewModel: ObservableObject {
         )
         modelContext.insert(assistantMessage)
         chat.applyMessageMutation(latestMessage: assistantMessage)
-        try? modelContext.save()
+        do {
+            try modelContext.save()
+        } catch {
+            Self.logger.error("[persist] threadId=\(self.chat.id, privacy: .public) role=assistant saveFailed error=\(error.localizedDescription, privacy: .public)")
+        }
         streamingText = ""
     }
 
