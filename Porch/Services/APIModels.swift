@@ -68,7 +68,7 @@ enum JSONSchemaValue: Encodable, Equatable {
 }
 
 struct StreamingToolCallDelta: Decodable {
-    var index: Int
+    var index: Int?
     var id: String?
     var type: String?
     var function: StreamingFunctionDelta?

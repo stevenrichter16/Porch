@@ -1,7 +1,7 @@
 import Foundation
 import SwiftData
 
-typealias ChatThread = PorchSchemaV5.ChatThread
+typealias ChatThread = PorchSchemaV6.ChatThread
 
 enum ChatThreadMetadataBackfill {
     @discardableResult

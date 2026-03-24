@@ -92,7 +92,11 @@ final class ChatViewModel: ObservableObject {
         modelContext.delete(lastMessage)
         let previousLatestMessage = messages.dropLast().last
         chat.applyMessageMutation(latestMessage: previousLatestMessage)
-        try? modelContext.save()
+        do {
+            try modelContext.save()
+        } catch {
+            Self.logger.error("Save failed during regenerateLastResponse: \(error.localizedDescription, privacy: .public)")
+        }
         startStreamingConversation(parameters: settings.generationParameters)
     }
 
@@ -150,11 +154,16 @@ final class ChatViewModel: ObservableObject {
             chat.title = ChatTitleGenerator.title(for: messageText)
         }
         chat.applyMessageMutation(latestMessage: userMessage)
-        try? modelContext.save()
+        do {
+            try modelContext.save()
+        } catch {
+            Self.logger.error("Save failed during send: \(error.localizedDescription, privacy: .public)")
+        }
         startStreamingConversation(parameters: parameters)
     }
 
     private func startStreamingConversation(parameters: GenerationParameters) {
+        Self.logger.notice("Starting stream for \(self.chat.modelID, privacy: .public) temp=\(parameters.temperature, privacy: .public) maxTokens=\(parameters.maxTokens, privacy: .public) topP=\(parameters.topP, privacy: .public) freqPenalty=\(parameters.frequencyPenalty, privacy: .public) presPenalty=\(parameters.presencePenalty, privacy: .public)")
         streamTask?.cancel()
         errorMessage = nil
         infoMessage = nil
@@ -260,6 +269,7 @@ final class ChatViewModel: ObservableObject {
         var receivedToolCalls: [ToolCall]?
         let clock = ContinuousClock()
         var lastPublishedAt = clock.now
+        let roundStartTime = clock.now
 
         do {
             let stream = await client.streamCompletion(request: descriptor)
@@ -286,22 +296,30 @@ final class ChatViewModel: ObservableObject {
                 return .cancelled
             }
 
+            let roundDuration = clock.now - roundStartTime
+
             // If we received tool calls, return them for the loop to handle
             if let toolCalls = receivedToolCalls, !toolCalls.isEmpty {
+                Self.logger.notice("Stream round completed in \(roundDuration, privacy: .public) with \(toolCalls.count, privacy: .public) native tool call(s), responseLength=\(draftText.count, privacy: .public)")
                 let content = draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : draftText
                 streamingText = ""
                 return .toolCallsReceived(toolCalls, assistantContent: content)
             }
 
             // Normal text completion
+            Self.logger.notice("Stream round completed in \(roundDuration, privacy: .public) with text, responseLength=\(draftText.count, privacy: .public) finishReason=\(String(describing: finishReason), privacy: .public)")
             persistAssistantDraft(text: draftText, isPartial: false, finishReason: finishReason)
             return .textCompleted(finishReason)
 
         } catch is CancellationError {
+            let roundDuration = clock.now - roundStartTime
+            Self.logger.notice("Stream round cancelled after \(roundDuration, privacy: .public), draftLength=\(draftText.count, privacy: .public)")
             flushStreamingDraft(draftText)
             persistAssistantDraft(text: draftText, isPartial: true, finishReason: .cancelled)
             return .cancelled
         } catch {
+            let roundDuration = clock.now - roundStartTime
+            Self.logger.error("Stream round failed after \(roundDuration, privacy: .public): \(error.localizedDescription, privacy: .public) draftLength=\(draftText.count, privacy: .public)")
             flushStreamingDraft(draftText)
             let hadDraft = !draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             if hadDraft {
@@ -318,28 +336,38 @@ final class ChatViewModel: ObservableObject {
     private func resolveToolDefinitions() -> [ToolDefinition]? {
         var tools: [ToolDefinition] = []
 
-        if settings.isWebSearchConnectorEnabled, webSearchConnector.isConfigured {
+        let webSearchEnabled = settings.isWebSearchConnectorEnabled
+        let webSearchConfigured = webSearchConnector.isConfigured
+        if webSearchEnabled, webSearchConfigured {
             tools.append(contentsOf: webSearchConnector.toolDefinitions)
         }
 
-        if settings.isGitHubConnectorEnabled,
-           githubConnector.isConfigured,
-           let githubContext = chat.githubContext {
+        let githubEnabled = settings.isGitHubConnectorEnabled
+        let githubConfigured = githubConnector.isConfigured
+        let hasGithubContext = chat.githubContext != nil
+        if githubEnabled, githubConfigured, let githubContext = chat.githubContext {
             tools.append(contentsOf: githubConnector.toolDefinitions(for: githubContext))
         }
 
+        Self.logger.debug("Resolved \(tools.count, privacy: .public) tools: webSearch=\(webSearchEnabled, privacy: .public)/\(webSearchConfigured, privacy: .public) github=\(githubEnabled, privacy: .public)/\(githubConfigured, privacy: .public)/\(hasGithubContext, privacy: .public)")
         return tools.isEmpty ? nil : tools
     }
 
     private func executeToolCall(_ toolCall: ToolCall) async -> String? {
+        let execStart = ContinuousClock.now
+        Self.logger.notice("Executing tool \(toolCall.function.name, privacy: .public) callId=\(toolCall.id, privacy: .public) args=\(toolCall.function.arguments.prefix(500), privacy: .public)")
+
         if settings.isWebSearchConnectorEnabled,
            webSearchConnector.toolDefinitions.contains(where: { $0.function.name == toolCall.function.name }) {
             do {
-                return try await webSearchConnector.execute(
+                let result = try await webSearchConnector.execute(
                     toolName: toolCall.function.name,
                     arguments: toolCall.function.arguments
                 )
+                Self.logger.notice("Tool \(toolCall.function.name, privacy: .public) completed in \(ContinuousClock.now - execStart, privacy: .public) resultLength=\(result.count, privacy: .public)")
+                return result
             } catch {
+                Self.logger.error("Tool \(toolCall.function.name, privacy: .public) failed in \(ContinuousClock.now - execStart, privacy: .public): \(error.localizedDescription, privacy: .public)")
                 return "{\"error\": \"\(error.localizedDescription)\"}"
             }
         }
@@ -400,9 +428,10 @@ final class ChatViewModel: ObservableObject {
                 result: result,
                 context: githubContext
             )
+            Self.logger.notice("Tool \(toolCall.function.name, privacy: .public) completed in \(ContinuousClock.now - execStart, privacy: .public) resultLength=\(result.count, privacy: .public)")
             return result
         } catch {
-            Self.logger.error("GitHub tool \(toolCall.function.name, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+            Self.logger.error("Tool \(toolCall.function.name, privacy: .public) failed in \(ContinuousClock.now - execStart, privacy: .public): \(error.localizedDescription, privacy: .public)")
             return "{\"error\": \"\(error.localizedDescription)\"}"
         }
     }
@@ -424,7 +453,11 @@ final class ChatViewModel: ObservableObject {
         )
         modelContext.insert(assistantMessage)
         chat.applyMessageMutation(latestMessage: assistantMessage)
-        try? modelContext.save()
+        do {
+            try modelContext.save()
+        } catch {
+            Self.logger.error("Save failed in persistAssistantToolCallMessage: \(error.localizedDescription, privacy: .public)")
+        }
         streamingText = ""
     }
 
@@ -439,7 +472,11 @@ final class ChatViewModel: ObservableObject {
         )
         modelContext.insert(toolMessage)
         chat.applyMessageMutation(latestMessage: toolMessage)
-        try? modelContext.save()
+        do {
+            try modelContext.save()
+        } catch {
+            Self.logger.error("Save failed in persistToolResultMessage for \(toolCall.function.name, privacy: .public): \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     private func currentServerConfiguration() throws -> ServerConfiguration {
@@ -508,6 +545,18 @@ final class ChatViewModel: ObservableObject {
             }
         }
 
+        var systemMsgCount = 0, userMsgCount = 0, assistantMsgCount = 0, toolMsgCount = 0, totalChars = 0
+        for msg in messages {
+            totalChars += msg.content?.count ?? 0
+            switch msg.role {
+            case MessageRole.system.rawValue: systemMsgCount += 1
+            case MessageRole.user.rawValue: userMsgCount += 1
+            case MessageRole.assistant.rawValue: assistantMsgCount += 1
+            case MessageRole.tool.rawValue: toolMsgCount += 1
+            default: break
+            }
+        }
+        Self.logger.notice("Outbound messages: \(messages.count, privacy: .public) total (system=\(systemMsgCount, privacy: .public) user=\(userMsgCount, privacy: .public) assistant=\(assistantMsgCount, privacy: .public) tool=\(toolMsgCount, privacy: .public)) totalChars=\(totalChars, privacy: .public)")
         return messages
     }
 
@@ -759,7 +808,11 @@ final class ChatViewModel: ObservableObject {
         )
         modelContext.insert(assistantMessage)
         chat.applyMessageMutation(latestMessage: assistantMessage)
-        try? modelContext.save()
+        do {
+            try modelContext.save()
+        } catch {
+            Self.logger.error("Save failed in persistAssistantDraft: \(error.localizedDescription, privacy: .public)")
+        }
         streamingText = ""
     }
 

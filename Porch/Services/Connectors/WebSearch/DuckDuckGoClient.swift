@@ -1,6 +1,8 @@
 import Foundation
+import os
 
 actor DuckDuckGoClient {
+    private static let logger = Logger(subsystem: "com.porch.app", category: "DuckDuckGo")
     private let session: URLSession
 
     init(session: URLSession = .shared) {
@@ -36,14 +38,19 @@ actor DuckDuckGoClient {
 
         guard let httpResponse = response as? HTTPURLResponse,
               (200...299).contains(httpResponse.statusCode) else {
+            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            Self.logger.error("[search] query=\(trimmedQuery, privacy: .public) httpError statusCode=\(code)")
             throw ConnectorError.apiError("DuckDuckGo returned an error.")
         }
 
         guard let html = String(data: data, encoding: .utf8) else {
+            Self.logger.error("[search] query=\(trimmedQuery, privacy: .public) error=couldNotDecodeResponse dataLength=\(data.count)")
             throw ConnectorError.apiError("Could not decode search response.")
         }
 
-        return parseResults(from: html, maxResults: min(max(maxResults, 1), 15))
+        let results = parseResults(from: html, maxResults: min(max(maxResults, 1), 15))
+        Self.logger.info("[search] query=\(trimmedQuery, privacy: .public) resultCount=\(results.count) htmlLength=\(html.count)")
+        return results
     }
 
     func fetchPageContent(url urlString: String, maxLength: Int = 15_000) async throws -> String {
@@ -64,15 +71,19 @@ actor DuckDuckGoClient {
         guard let httpResponse = response as? HTTPURLResponse,
               (200...299).contains(httpResponse.statusCode) else {
             let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            Self.logger.error("[fetchPage] url=\(urlString, privacy: .public) httpError statusCode=\(code)")
             throw ConnectorError.apiError("Failed to fetch page (HTTP \(code)).")
         }
 
         guard let html = String(data: data, encoding: .utf8) else {
+            Self.logger.error("[fetchPage] url=\(urlString, privacy: .public) error=couldNotDecodeContent dataLength=\(data.count)")
             throw ConnectorError.apiError("Could not decode page content.")
         }
 
         let text = extractReadableText(from: html)
-        if text.count > maxLength {
+        let truncated = text.count > maxLength
+        Self.logger.info("[fetchPage] url=\(urlString, privacy: .public) rawLength=\(html.count) textLength=\(text.count) truncated=\(truncated)")
+        if truncated {
             return String(text.prefix(maxLength)) + "\n\n[Content truncated at \(maxLength) characters]"
         }
         return text
