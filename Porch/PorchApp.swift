@@ -5,13 +5,12 @@
 //  Created by Steven Richter on 3/16/26.
 //
 
-import os
 import SwiftUI
 import SwiftData
 
 @main
 struct PorchApp: App {
-    private static let logger = Logger(subsystem: "com.porch.app", category: "App")
+    private static let logger = PorchLogger(category: "App")
     var sharedModelContainer: ModelContainer = {
         let logger = PorchApp.logger
         let isRunningTests = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
@@ -34,12 +33,12 @@ struct PorchApp: App {
             do {
                 try ChatThreadMetadataBackfill.populateMissingLastMessagePreviews(in: context)
             } catch {
-                logger.error("[startup] previewBackfillFailed error=\(error.localizedDescription, privacy: .public)")
+                logger.error("[startup] previewBackfillFailed error=\(error.localizedDescription)")
             }
             logger.info("[launch] schemaVersion=V5")
             return container
         } catch {
-            logger.fault("[startup] modelContainerInitFailed error=\(error.localizedDescription, privacy: .public)")
+            logger.fault("[startup] modelContainerInitFailed error=\(error.localizedDescription)")
             fatalError("Could not create ModelContainer: \(error)")
         }
     }()

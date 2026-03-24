@@ -1,5 +1,4 @@
 import Foundation
-import os
 
 /// Parses tool calls from LLM text output for models that don't support
 /// structured OpenAI-style `tool_calls` responses.
@@ -19,7 +18,7 @@ import os
 ///    ```
 ///
 enum TextToolCallParser {
-    private static let logger = Logger(subsystem: "com.porch.app", category: "ToolParser")
+    private static let logger = PorchLogger(category: "ToolParser")
 
     struct ParsedToolCall: Hashable {
         var name: String
@@ -50,12 +49,12 @@ enum TextToolCallParser {
 
         if toolCalls.isEmpty {
             let hasToolCallMarkers = text.contains("<tool_call>") || text.contains("```tool_call")
-            logger.debug("[parse] noToolCallsFound inputLength=\(text.count) hasMarkers=\(hasToolCallMarkers) textSnippet=\(String(text.suffix(200)), privacy: .public)")
+            logger.debug("[parse] noToolCallsFound inputLength=\(text.count) hasMarkers=\(hasToolCallMarkers) textSnippet=\(String(text.suffix(200)))")
         } else {
             for tc in toolCalls {
-                logger.info("[parse] toolCall name=\(tc.name, privacy: .public) argsLength=\(tc.arguments.count) args=\(tc.arguments.prefix(300), privacy: .public)")
+                logger.info("[parse] toolCall name=\(tc.name) argsLength=\(tc.arguments.count) args=\(tc.arguments.prefix(300))")
             }
-            logger.info("[parse] foundToolCalls=\(toolCalls.count) names=\(toolCalls.map(\.name).joined(separator: ","), privacy: .public) remainingTextLength=\(remaining.count)")
+            logger.info("[parse] foundToolCalls=\(toolCalls.count) names=\(toolCalls.map(\.name).joined(separator: ",")) remainingTextLength=\(remaining.count)")
         }
 
         return ParseResult(

@@ -1,11 +1,10 @@
 import Combine
 import Foundation
-import os
 import SwiftData
 
 @MainActor
 final class SettingsViewModel: ObservableObject {
-    private static let logger = Logger(subsystem: "com.porch.app", category: "Settings")
+    private static let logger = PorchLogger(category: "Settings")
     @Published var baseURL: String
     @Published var apiKey: String
     @Published var selectedModelID: String
@@ -45,7 +44,7 @@ final class SettingsViewModel: ObservableObject {
     }
 
     func validateAndSave(into settings: AppSettings, modelContext: ModelContext) async -> Bool {
-        Self.logger.info("[validate] baseURL=\(self.baseURL, privacy: .public) hasApiKey=\(self.apiKey.nilIfBlank != nil)")
+        Self.logger.info("[validate] baseURL=\(baseURL) hasApiKey=\(apiKey.nilIfBlank != nil)")
         isWorking = true
         validationState = .validating
         validationMessage = "Checking server and loading models..."
@@ -78,10 +77,10 @@ final class SettingsViewModel: ObservableObject {
             )
             validationState = .valid
             validationMessage = successMessage
-            Self.logger.info("[validate] success modelCount=\(models.count) selectedModel=\(self.selectedModelID, privacy: .public)")
+            Self.logger.info("[validate] success modelCount=\(models.count) selectedModel=\(selectedModelID)")
             return true
         } catch {
-            Self.logger.error("[validate] error=\(error.localizedDescription, privacy: .public)")
+            Self.logger.error("[validate] error=\(error.localizedDescription)")
             validationState = .invalid
             validationMessage = error.localizedDescription
             return false

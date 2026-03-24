@@ -1,8 +1,7 @@
 import Foundation
-import os
 
 final class WebSearchConnector: Connector, @unchecked Sendable {
-    private static let logger = Logger(subsystem: "com.porch.app", category: "WebSearch")
+    private static let logger = PorchLogger(category: "WebSearch")
     let id = "web_search"
     let displayName = "Web Search"
     let iconSystemName = "globe"
@@ -22,7 +21,7 @@ final class WebSearchConnector: Connector, @unchecked Sendable {
     }
 
     func execute(toolName: String, arguments: String) async throws -> String {
-        Self.logger.info("[exec] tool=\(toolName, privacy: .public)")
+        Self.logger.info("[exec] tool=\(toolName)")
         let argsData = Data(arguments.utf8)
 
         do {
@@ -35,10 +34,10 @@ final class WebSearchConnector: Connector, @unchecked Sendable {
             default:
                 throw ConnectorError.unknownTool(toolName)
             }
-            Self.logger.info("[exec] tool=\(toolName, privacy: .public) resultLength=\(result.count)")
+            Self.logger.info("[exec] tool=\(toolName) resultLength=\(result.count)")
             return result
         } catch {
-            Self.logger.error("[exec] tool=\(toolName, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+            Self.logger.error("[exec] tool=\(toolName) error=\(error.localizedDescription)")
             throw error
         }
     }

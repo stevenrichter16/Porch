@@ -1,10 +1,9 @@
 import Combine
 import Foundation
-import os
 
 @MainActor
 final class GitHubContextSelectionViewModel: ObservableObject {
-    private static let logger = Logger(subsystem: "com.porch.app", category: "GitHubContext")
+    private static let logger = PorchLogger(category: "GitHubContext")
     @Published var searchQuery = ""
     @Published private(set) var availableRepositories: [GitHubRepository] = []
     @Published var ownerInput = ""
@@ -124,7 +123,7 @@ final class GitHubContextSelectionViewModel: ObservableObject {
             Self.logger.info("[repoList] loaded repositoryCount=\(mergedRepositories.count)")
             didLoadAccessibleRepositories = true
         } catch {
-            Self.logger.error("[repoList] error=\(error.localizedDescription, privacy: .public)")
+            Self.logger.error("[repoList] error=\(error.localizedDescription)")
             didLoadAccessibleRepositories = false
             repoListErrorMessage = error.localizedDescription
         }
@@ -233,7 +232,7 @@ final class GitHubContextSelectionViewModel: ObservableObject {
             return
         }
 
-        Self.logger.info("[loadRepo] owner=\(owner, privacy: .public) repo=\(repo, privacy: .public)")
+        Self.logger.info("[loadRepo] owner=\(owner) repo=\(repo)")
         isLoadingRepository = true
         errorMessage = nil
         defer { isLoadingRepository = false }
@@ -245,10 +244,10 @@ final class GitHubContextSelectionViewModel: ObservableObject {
             ownerInput = details.metadata.owner.login
             repoInput = details.metadata.name
             expandedRepositoryFullName = details.metadata.full_name
-            Self.logger.info("[loadRepo] success fullName=\(details.metadata.full_name, privacy: .public) branchCount=\(details.branches.count) defaultBranch=\(details.metadata.default_branch, privacy: .public)")
+            Self.logger.info("[loadRepo] success fullName=\(details.metadata.full_name) branchCount=\(details.branches.count) defaultBranch=\(details.metadata.default_branch)")
             syncExpandedDraftState(for: details.metadata.full_name)
         } catch {
-            Self.logger.error("[loadRepo] owner=\(owner, privacy: .public) repo=\(repo, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+            Self.logger.error("[loadRepo] owner=\(owner) repo=\(repo) error=\(error.localizedDescription)")
             errorMessage = error.localizedDescription
         }
     }
@@ -385,7 +384,7 @@ final class GitHubContextSelectionViewModel: ObservableObject {
                 validationMessage: "Using branch \(trimmedBranch)."
             )
         } catch let apiError as GitHubAPIError where apiError.statusCode == 404 {
-            Self.logger.info("[validateBranch] repo=\(metadata.full_name, privacy: .public) branch=\(trimmedBranch, privacy: .public) result=notFound")
+            Self.logger.info("[validateBranch] repo=\(metadata.full_name) branch=\(trimmedBranch) result=notFound")
             let message = "Branch \(trimmedBranch) was not found."
             setExpandedBranchState(message: message, isValid: false)
             if shouldMutateDraftOnFailure {
