@@ -8,9 +8,7 @@ enum MessageTimestampFormatter {
         locale: Locale = .autoupdatingCurrent,
         timeZone: TimeZone = .autoupdatingCurrent
     ) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = locale
-        formatter.timeZone = timeZone
+        let formatter = makeFormatter(locale: locale, timeZone: timeZone)
 
         if calendar.isDate(date, inSameDayAs: referenceDate) {
             formatter.setLocalizedDateFormatFromTemplate("jm")
@@ -19,5 +17,12 @@ enum MessageTimestampFormatter {
         }
 
         return formatter.string(from: date)
+    }
+
+    private static func makeFormatter(locale: Locale, timeZone: TimeZone) -> DateFormatter {
+        let formatter = DateFormatter()
+        formatter.locale = locale
+        formatter.timeZone = timeZone
+        return formatter
     }
 }
