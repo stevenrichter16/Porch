@@ -14,9 +14,9 @@ struct PorchApp: App {
     private static let logger = Logger(subsystem: "com.porch.app", category: "App")
     var sharedModelContainer: ModelContainer = {
         let logger = PorchApp.logger
-        let isRunningTests = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+        let uiTestConfiguration = OpenClawUITestConfiguration.current
         let schema = Schema(versionedSchema: PorchSchemaV6.self)
-        let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: isRunningTests)
+        let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: uiTestConfiguration.usesInMemoryStore)
 
         do {
             let container = try ModelContainer(
@@ -27,10 +27,16 @@ struct PorchApp: App {
             let context = ModelContext(container)
             var descriptor = FetchDescriptor<AppSettings>()
             descriptor.fetchLimit = 1
-            if try context.fetch(descriptor).isEmpty {
-                context.insert(AppSettings())
+            let settings: AppSettings
+            if let existingSettings = try context.fetch(descriptor).first {
+                settings = existingSettings
+            } else {
+                let newSettings = AppSettings()
+                context.insert(newSettings)
+                settings = newSettings
                 try context.save()
             }
+            PorchUITestBootstrap.applyIfNeeded(context: context, settings: settings)
             do {
                 try ChatThreadMetadataBackfill.populateMissingLastMessagePreviews(in: context)
             } catch {

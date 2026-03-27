@@ -31,6 +31,7 @@ struct ChatListView: View {
             List(selection: $selectedChatIDs) {
                 chatListContent
             }
+            .accessibilityIdentifier(PorchAutomationID.chatList)
             .environment(\.editMode, .constant(.active))
             .scrollContentBackground(.hidden)
             .background(PorchTheme.chatBackground)
@@ -81,6 +82,7 @@ struct ChatListView: View {
             List(selection: $selectedChatID) {
                 chatListContent
             }
+            .accessibilityIdentifier(PorchAutomationID.chatList)
             .scrollContentBackground(.hidden)
             .background(PorchTheme.chatBackground)
             .tint(PorchTheme.accent)
@@ -142,6 +144,7 @@ struct ChatListView: View {
                 )
             )
             .listRowBackground(Color.clear)
+            .accessibilityIdentifier(PorchAutomationID.chatListEmpty)
         } else {
             ForEach(chats) { chat in
                 chatRow(chat)
@@ -155,6 +158,7 @@ struct ChatListView: View {
                 Button(action: onOpenSettings) {
                     Image(systemName: "slider.horizontal.3")
                 }
+                .accessibilityIdentifier(PorchAutomationID.settingsButton)
             }
 
             ToolbarItemGroup(placement: .topBarTrailing) {
@@ -176,6 +180,7 @@ struct ChatListView: View {
                         } label: {
                             Image(systemName: "checklist")
                         }
+                        .accessibilityIdentifier(PorchAutomationID.selectionButton)
                     }
 
                     Menu {
@@ -190,6 +195,7 @@ struct ChatListView: View {
                         Image(systemName: "square.and.pencil")
                     }
                     .disabled(!isReadyForChat || availableModels.isEmpty)
+                    .accessibilityIdentifier(PorchAutomationID.newChatButton)
                 }
             }
         }
@@ -200,6 +206,7 @@ struct ChatListView: View {
             .tag(chat.id)
             .listRowBackground(PorchTheme.chatBackground)
             .listRowSeparatorTint(PorchTheme.messageDivider)
+            .accessibilityIdentifier(PorchAutomationID.chatRow)
 
         if isSelectingChats {
             return AnyView(baseRow)

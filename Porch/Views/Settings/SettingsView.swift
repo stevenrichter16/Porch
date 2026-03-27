@@ -42,6 +42,7 @@ struct SettingsView: View {
                     .textInputAutocapitalization(.never)
                     .disableAutocorrection(true)
                     .keyboardType(.URL)
+                    .accessibilityIdentifier(PorchAutomationID.baseURLField)
 
                 SecureField("Optional API key", text: $viewModel.apiKey)
                     .textInputAutocapitalization(.never)
@@ -68,6 +69,7 @@ struct SettingsView: View {
                             Text(model.id).tag(model.id)
                         }
                     }
+                    .accessibilityIdentifier(PorchAutomationID.modelPicker)
                 }
 
                 TextField("System prompt (optional)", text: $viewModel.systemPrompt, axis: .vertical)
@@ -160,8 +162,10 @@ struct SettingsView: View {
                 .disabled(viewModel.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || viewModel.isWorking)
                 .listRowBackground(Color.accentColor)
                 .foregroundStyle(.white)
+                .accessibilityIdentifier(PorchAutomationID.validateButton)
             }
         }
+        .accessibilityIdentifier(PorchAutomationID.settingsRoot)
         .navigationTitle(mode == .onboarding ? "Server Setup" : "Settings")
         .navigationBarTitleDisplayMode(.inline)
     }

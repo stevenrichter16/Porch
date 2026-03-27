@@ -120,6 +120,7 @@ struct InputBar: View {
             .padding(.vertical, 12)
             .background(PorchTheme.inputFieldBackground)
             .clipShape(RoundedRectangle(cornerRadius: PorchTheme.inputFieldCornerRadius, style: .continuous))
+            .accessibilityIdentifier(PorchAutomationID.composerField)
     }
 
     private var composerTuneButton: some View {
@@ -127,6 +128,7 @@ struct InputBar: View {
             isActive: !overrideChips.isEmpty,
             action: openOverrideSheet
         )
+        .accessibilityIdentifier(PorchAutomationID.tuneButton)
     }
 
     private var composerPromptSuggestionButton: some View {
@@ -144,6 +146,7 @@ struct InputBar: View {
         .buttonStyle(.plain)
         .disabled(isStreaming)
         .accessibilityLabel("Open project prompt suggestions")
+        .accessibilityIdentifier(PorchAutomationID.promptButton)
     }
 
     private var composerSendButton: some View {
@@ -153,6 +156,7 @@ struct InputBar: View {
             onLongPress: sendButtonLongPressAction,
             action: buttonAction
         )
+        .accessibilityIdentifier(PorchAutomationID.sendButton)
     }
 
     private var sendButtonLongPressAction: (() -> Void)? {

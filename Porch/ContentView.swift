@@ -34,9 +34,9 @@ struct ContentView: View {
                         onDeleteChat: deleteChat(_:),
                         onDeleteChats: deleteChats(_:)
                     )
-                    } detail: {
-                        if settings.isReadyForChat {
-                            if let selectedChat {
+                } detail: {
+                    if settings.isReadyForChat {
+                        if let selectedChat {
                             ChatDetailView(
                                 chat: selectedChat,
                                 settings: settings,
@@ -48,18 +48,20 @@ struct ContentView: View {
                                 systemImage: "bubble.left.and.bubble.right",
                                 description: Text("Create a conversation or select one from the list.")
                             )
+                            .accessibilityIdentifier(PorchAutomationID.chatDetailEmpty)
                         }
                     } else {
                         NavigationStack {
                             SettingsView(settings: settings, mode: .onboarding) {
                                 preferredColumn = .sidebar
-                                if selectedChatID == nil {
+                                if selectedChatID == nil, shouldAutoSelectInitialChat {
                                     selectedChatID = chats.first?.id
                                 }
                             }
                         }
                     }
                 }
+                .accessibilityIdentifier(PorchAutomationID.appRoot)
                 .sheet(isPresented: $isShowingSettings) {
                     NavigationStack {
                         SettingsView(settings: settings, mode: .sheet)
@@ -67,7 +69,7 @@ struct ContentView: View {
                 }
                 .task(id: settings.isReadyForChat) {
                     if settings.isReadyForChat {
-                        if selectedChatID == nil {
+                        if selectedChatID == nil, shouldAutoSelectInitialChat {
                             selectedChatID = chats.first?.id
                         }
                         preferredColumn = .sidebar
@@ -78,6 +80,7 @@ struct ContentView: View {
             } else {
                 ProgressView("Loading Porch...")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .accessibilityIdentifier(PorchAutomationID.loadingRoot)
             }
         }
     }
@@ -125,6 +128,21 @@ struct ContentView: View {
     private var selectedChat: ChatThread? {
         guard let selectedChatID else { return nil }
         return chats.first { $0.id == selectedChatID }
+    }
+
+    private var shouldAutoSelectInitialChat: Bool {
+        switch deterministicUITestScenario {
+        case .createOrSelectChat:
+            return false
+        default:
+            return true
+        }
+    }
+
+    private var deterministicUITestScenario: PorchUITestScenario? {
+        let configuration = OpenClawUITestConfiguration.current
+        guard configuration.isDeterministicMode else { return nil }
+        return PorchUITestScenario(rawScenario: configuration.scenario)
     }
 }
 

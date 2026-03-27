@@ -60,6 +60,7 @@ struct ChatDetailView: View {
                 onStop: viewModel.stopGenerating
             )
         }
+        .accessibilityIdentifier(PorchAutomationID.chatDetailRoot)
         .navigationTitle(chat.title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {

@@ -34,6 +34,20 @@
                ReferencedContainer = "container:Porch.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
+         <BuildActionEntry
+            buildForTesting = "YES"
+            buildForRunning = "NO"
+            buildForProfiling = "NO"
+            buildForArchiving = "NO"
+            buildForAnalyzing = "YES">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "B05E40762F68CB5300E294D3"
+               BuildableName = "PorchUITests.xctest"
+               BlueprintName = "PorchUITests"
+               ReferencedContainer = "container:Porch.xcodeproj">
+            </BuildableReference>
+         </BuildActionEntry>
       </BuildActionEntries>
    </BuildAction>
    <TestAction
@@ -50,6 +64,17 @@
                BlueprintIdentifier = "B05E406A2F68CB5300E294D3"
                BuildableName = "PorchTests.xctest"
                BlueprintName = "PorchTests"
+               ReferencedContainer = "container:Porch.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
+         <TestableReference
+            skipped = "NO"
+            parallelizable = "YES">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "B05E40762F68CB5300E294D3"
+               BuildableName = "PorchUITests.xctest"
+               BlueprintName = "PorchUITests"
                ReferencedContainer = "container:Porch.xcodeproj">
             </BuildableReference>
          </TestableReference>

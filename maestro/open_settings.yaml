@@ -1,0 +1,16 @@
+appId: ${APP_ID}
+---
+- launchApp:
+    clearState: true
+    stopApp: true
+    arguments:
+      OPENCLAW_UI_TEST_MODE: 1
+      OPENCLAW_UI_TEST_SCENARIO: ${OPENCLAW_UI_TEST_SCENARIO}
+      OPENCLAW_UI_TEST_DISABLE_AUDIO: 1
+- assertVisible:
+    id: "porch.chat.settings"
+- tapOn:
+    id: "porch.chat.settings"
+- assertVisible:
+    id: "porch.settings.root"
+- takeScreenshot: "porch-open-settings"

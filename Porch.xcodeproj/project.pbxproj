@@ -18,11 +18,19 @@
 			remoteGlobalIDString = B05E40512F68CB5000E294D3;
 			remoteInfo = Porch;
 		};
+		B05E40722F68CB5300E294D3 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = B05E404A2F68CB5000E294D3 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = B05E40512F68CB5000E294D3;
+			remoteInfo = Porch;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
 		B05E40522F68CB5000E294D3 /* Porch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Porch.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B05E40632F68CB5300E294D3 /* PorchTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PorchTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		B05E40702F68CB5300E294D3 /* PorchUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PorchUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -34,6 +42,11 @@
 		B05E40642F68CB5300E294D3 /* PorchTests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = PorchTests;
+			sourceTree = "<group>";
+		};
+		B05E40712F68CB5300E294D3 /* PorchUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = PorchUITests;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -54,6 +67,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		B05E40732F68CB5300E294D3 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -62,6 +82,7 @@
 			children = (
 				B05E40542F68CB5000E294D3 /* Porch */,
 				B05E40642F68CB5300E294D3 /* PorchTests */,
+				B05E40712F68CB5300E294D3 /* PorchUITests */,
 				B05E40532F68CB5000E294D3 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -71,6 +92,7 @@
 			children = (
 				B05E40522F68CB5000E294D3 /* Porch.app */,
 				B05E40632F68CB5300E294D3 /* PorchTests.xctest */,
+				B05E40702F68CB5300E294D3 /* PorchUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -124,6 +146,29 @@
 			productReference = B05E40632F68CB5300E294D3 /* PorchTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
+		B05E40762F68CB5300E294D3 /* PorchUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B05E407A2F68CB5300E294D3 /* Build configuration list for PBXNativeTarget "PorchUITests" */;
+			buildPhases = (
+				B05E40742F68CB5300E294D3 /* Sources */,
+				B05E40732F68CB5300E294D3 /* Frameworks */,
+				B05E40752F68CB5300E294D3 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				B05E40772F68CB5300E294D3 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				B05E40712F68CB5300E294D3 /* PorchUITests */,
+			);
+			name = PorchUITests;
+			packageProductDependencies = (
+			);
+			productName = PorchUITests;
+			productReference = B05E40702F68CB5300E294D3 /* PorchUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -138,6 +183,10 @@
 						CreatedOnToolsVersion = 26.1.1;
 					};
 					B05E406A2F68CB5300E294D3 = {
+						CreatedOnToolsVersion = 26.1.1;
+						TestTargetID = B05E40512F68CB5000E294D3;
+					};
+					B05E40762F68CB5300E294D3 = {
 						CreatedOnToolsVersion = 26.1.1;
 						TestTargetID = B05E40512F68CB5000E294D3;
 					};
@@ -162,6 +211,7 @@
 			targets = (
 				B05E40512F68CB5000E294D3 /* Porch */,
 				B05E406A2F68CB5300E294D3 /* PorchTests */,
+				B05E40762F68CB5300E294D3 /* PorchUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -175,6 +225,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		B05E40692F68CB5300E294D3 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B05E40752F68CB5300E294D3 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -198,6 +255,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		B05E40742F68CB5300E294D3 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -205,6 +269,11 @@
 			isa = PBXTargetDependency;
 			target = B05E40512F68CB5000E294D3 /* Porch */;
 			targetProxy = B05E406B2F68CB5300E294D3 /* PBXContainerItemProxy */;
+		};
+		B05E40772F68CB5300E294D3 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = B05E40512F68CB5000E294D3 /* Porch */;
+			targetProxy = B05E40722F68CB5300E294D3 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -469,6 +538,46 @@
 			};
 			name = Release;
 		};
+		B05E40782F68CB5300E294D3 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 77F3383U2A;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = steven.PorchUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = auto;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = Porch;
+			};
+			name = Debug;
+		};
+		B05E40792F68CB5300E294D3 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 77F3383U2A;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = steven.PorchUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = auto;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = Porch;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -495,6 +604,15 @@
 			buildConfigurations = (
 				B05E406E2F68CB5300E294D3 /* Debug */,
 				B05E406F2F68CB5300E294D3 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		B05E407A2F68CB5300E294D3 /* Build configuration list for PBXNativeTarget "PorchUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B05E40782F68CB5300E294D3 /* Debug */,
+				B05E40792F68CB5300E294D3 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
