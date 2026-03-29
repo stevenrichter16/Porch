@@ -209,7 +209,7 @@ struct MessageBubble: View, Equatable {
                     .foregroundStyle(.tertiary)
             }
 
-            if let usage = model.tokenUsage {
+            if let usage = model.tokenUsage, usage.totalTokens > 0 {
                 TokenUsagePill(usage: usage)
             }
 
@@ -385,13 +385,16 @@ struct ThinkingDisclosure: View {
             .buttonStyle(.plain)
 
             if isExpanded {
-                Text(content)
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .padding(10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(PorchTheme.inputFieldBackground.opacity(0.5))
-                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                ScrollView {
+                    Text(content)
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, maxHeight: 300, alignment: .leading)
+                .background(PorchTheme.inputFieldBackground.opacity(0.5))
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
         }
     }

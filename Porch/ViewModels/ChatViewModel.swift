@@ -465,6 +465,13 @@ final class ChatViewModel: ObservableObject {
             }
         }
 
+        // Check if this is a GitHub tool before entering the GitHub block
+        guard settings.isGitHubConnectorEnabled,
+              githubConnector.isConfigured else {
+            Self.logger.error("Tool \(toolCall.function.name) not found in any connector callId=\(toolCall.id)")
+            return "{\"error\": \"Unknown tool: \(toolCall.function.name)\"}"
+        }
+
         do {
             guard let githubContext = chat.githubContext else {
                 Self.logger.error("GitHub tool \(toolCall.function.name) was requested without a selected repo context")
@@ -1020,11 +1027,20 @@ final class ChatViewModel: ObservableObject {
             )
 
             do {
-                try await connector.discoverTools()
+                // Timeout after 5 seconds to avoid blocking the first message
+                try await withThrowingTaskGroup(of: Void.self) { group in
+                    group.addTask { try await connector.discoverTools() }
+                    group.addTask {
+                        try await Task.sleep(for: .seconds(5))
+                        throw CancellationError()
+                    }
+                    try await group.next()
+                    group.cancelAll()
+                }
                 mcpConnectors.append(connector)
                 Self.logger.notice("MCP server \(config.name) discovered \(connector.toolDefinitions.count) tools")
             } catch {
-                Self.logger.error("MCP server \(config.name) discovery failed: \(error.localizedDescription)")
+                Self.logger.error("MCP server \(config.name) discovery failed or timed out: \(error.localizedDescription)")
             }
         }
     }

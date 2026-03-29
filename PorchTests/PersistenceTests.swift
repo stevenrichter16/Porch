@@ -407,4 +407,118 @@ final class PersistenceTests: XCTestCase {
         XCTAssertEqual(settings.generationParameters, parameters)
         XCTAssertEqual(settings.availableModels, models)
     }
+
+    // MARK: - V7 Features
+
+    func testChatMessageThinkingContentPersistence() throws {
+        let container = try TestModelContainerFactory.makeContainer()
+        let context = ModelContext(container)
+
+        let thread = ChatThread(serverBaseURL: "http://server.test", modelID: "model", systemPrompt: "")
+        context.insert(thread)
+
+        let message = ChatMessage(
+            role: .assistant,
+            content: "The answer is 42.",
+            thread: thread,
+            thinkingContent: "Let me think step by step..."
+        )
+        context.insert(message)
+        try context.save()
+
+        let fetched = try context.fetch(FetchDescriptor<ChatMessage>()).first
+        XCTAssertEqual(fetched?.thinkingContent, "Let me think step by step...")
+        XCTAssertEqual(fetched?.content, "The answer is 42.")
+    }
+
+    func testChatMessageTokenUsagePersistence() throws {
+        let container = try TestModelContainerFactory.makeContainer()
+        let context = ModelContext(container)
+
+        let thread = ChatThread(serverBaseURL: "http://server.test", modelID: "model", systemPrompt: "")
+        context.insert(thread)
+
+        let message = ChatMessage(
+            role: .assistant,
+            content: "response",
+            thread: thread,
+            promptTokens: 150,
+            completionTokens: 75
+        )
+        context.insert(message)
+        try context.save()
+
+        let fetched = try context.fetch(FetchDescriptor<ChatMessage>()).first
+        XCTAssertEqual(fetched?.promptTokens, 150)
+        XCTAssertEqual(fetched?.completionTokens, 75)
+        XCTAssertEqual(fetched?.totalTokens, 225)
+    }
+
+    func testChatMessageImageDataPersistence() throws {
+        let container = try TestModelContainerFactory.makeContainer()
+        let context = ModelContext(container)
+
+        let thread = ChatThread(serverBaseURL: "http://server.test", modelID: "model", systemPrompt: "")
+        context.insert(thread)
+
+        let imageData = Data("fake-image-bytes".utf8)
+        let message = ChatMessage(
+            role: .user,
+            content: "What is this?",
+            thread: thread,
+            imageData: imageData,
+            imageMimeType: "image/jpeg"
+        )
+        context.insert(message)
+        try context.save()
+
+        let fetched = try context.fetch(FetchDescriptor<ChatMessage>()).first
+        XCTAssertEqual(fetched?.imageData, imageData)
+        XCTAssertEqual(fetched?.imageMimeType, "image/jpeg")
+    }
+
+    func testMemoryEntryPersistence() throws {
+        let container = try TestModelContainerFactory.makeContainer()
+        let context = ModelContext(container)
+
+        let entry = MemoryEntry(key: "name", content: "Alice", category: "fact")
+        context.insert(entry)
+        try context.save()
+
+        let fetched = try context.fetch(FetchDescriptor<MemoryEntry>()).first
+        XCTAssertEqual(fetched?.key, "name")
+        XCTAssertEqual(fetched?.content, "Alice")
+        XCTAssertEqual(fetched?.category, "fact")
+    }
+
+    func testAppSettingsMemoryConnectorEnabledDefault() throws {
+        let container = try TestModelContainerFactory.makeContainer()
+        let context = ModelContext(container)
+
+        let settings = AppSettings()
+        context.insert(settings)
+        try context.save()
+
+        let fetched = try context.fetch(FetchDescriptor<AppSettings>()).first
+        XCTAssertEqual(fetched?.isMemoryConnectorEnabled, true)
+    }
+
+    func testAppSettingsMCPServerConfigs() throws {
+        let container = try TestModelContainerFactory.makeContainer()
+        let context = ModelContext(container)
+
+        let settings = AppSettings()
+        context.insert(settings)
+
+        var configs = settings.mcpServerConfigs
+        XCTAssertTrue(configs.isEmpty)
+
+        configs.append(MCPServerConfig(name: "Test", url: "http://localhost:3000"))
+        settings.mcpServerConfigs = configs
+        try context.save()
+
+        let fetched = try context.fetch(FetchDescriptor<AppSettings>()).first
+        XCTAssertEqual(fetched?.mcpServerConfigs.count, 1)
+        XCTAssertEqual(fetched?.mcpServerConfigs.first?.name, "Test")
+    }
 }

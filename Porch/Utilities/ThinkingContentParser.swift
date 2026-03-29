@@ -13,16 +13,16 @@ enum ThinkingContentParser {
         var visible: String
     }
 
+    // Pre-compiled regex patterns for performance
+    private static let thinkPattern = #/<think>([\s\S]*?)<\/think>/#
+    private static let thinkingPattern = #/<thinking>([\s\S]*?)<\/thinking>/#
+
     /// Parse completed text, extracting all think blocks.
     static func parse(_ text: String) -> Result {
         var thinking = ""
         var visible = text
 
-        // Match <think>...</think> and <thinking>...</thinking>
-        let patterns: [Regex<(Substring, Substring)>] = [
-            #/<think>([\s\S]*?)<\/think>/#,
-            #/<thinking>([\s\S]*?)<\/thinking>/#
-        ]
+        let patterns: [Regex<(Substring, Substring)>] = [thinkPattern, thinkingPattern]
 
         for pattern in patterns {
             let matches = visible.matches(of: pattern)

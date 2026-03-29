@@ -16,9 +16,10 @@ final class MCPConnector: Connector, @unchecked Sendable {
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
 
+    // Guarded by lock — written during discoverTools(), read during tool resolution/execution
+    private let lock = NSLock()
     private var discoveredTools: [MCPClient.MCPToolInfo] = []
-    private var cachedToolDefinitions: [ToolDefinition] = []
-    private var isDiscovered = false
+    private var _cachedToolDefinitions: [ToolDefinition] = []
 
     init(
         serverURL: URL,
@@ -36,20 +37,31 @@ final class MCPConnector: Connector, @unchecked Sendable {
     var isConfigured: Bool { true }
 
     var toolDefinitions: [ToolDefinition] {
-        cachedToolDefinitions
+        lock.lock()
+        defer { lock.unlock() }
+        return _cachedToolDefinitions
     }
 
     /// Discover available tools from the MCP server. Must be called before tools can be used.
     func discoverTools() async throws {
         Self.logger.info("[discover] server=\(serverURL.absoluteString)")
-        discoveredTools = try await client.listTools(serverURL: serverURL, headers: headers)
-        cachedToolDefinitions = discoveredTools.map(convertToToolDefinition)
-        isDiscovered = true
-        Self.logger.info("[discover] found \(discoveredTools.count) tools: \(discoveredTools.map(\.name).joined(separator: ", "))")
+        let tools = try await client.listTools(serverURL: serverURL, headers: headers)
+        let definitions = tools.map(convertToToolDefinition)
+
+        lock.lock()
+        discoveredTools = tools
+        _cachedToolDefinitions = definitions
+        lock.unlock()
+
+        Self.logger.info("[discover] found \(tools.count) tools: \(tools.map(\.name).joined(separator: ", "))")
     }
 
     func execute(toolName: String, arguments: String) async throws -> String {
-        guard discoveredTools.contains(where: { $0.name == toolName }) else {
+        lock.lock()
+        let hasMatchingTool = discoveredTools.contains(where: { $0.name == toolName })
+        lock.unlock()
+
+        guard hasMatchingTool else {
             throw ConnectorError.unknownTool(toolName)
         }
 

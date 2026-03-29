@@ -85,7 +85,7 @@ struct InputBar: View {
     private var attachmentButton: some View {
         PhotosPicker(
             selection: $selectedPhotoItems,
-            maxSelectionCount: 4,
+            maxSelectionCount: 1,
             matching: .images
         ) {
             Image(systemName: "plus.circle.fill")

@@ -154,8 +154,16 @@ struct OpenAIChatMessage: Codable, Equatable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         role = try container.decode(String.self, forKey: .role)
-        content = try container.decodeIfPresent(String.self, forKey: .content)
-        contentParts = nil
+
+        // content can be either a plain string or an array of ContentParts (vision API)
+        if let parts = try? container.decode([ContentPart].self, forKey: .content) {
+            contentParts = parts
+            content = parts.compactMap(\.text).joined()
+        } else {
+            content = try container.decodeIfPresent(String.self, forKey: .content)
+            contentParts = nil
+        }
+
         tool_calls = try container.decodeIfPresent([ToolCall].self, forKey: .tool_calls)
         tool_call_id = try container.decodeIfPresent(String.self, forKey: .tool_call_id)
         name = try container.decodeIfPresent(String.self, forKey: .name)
