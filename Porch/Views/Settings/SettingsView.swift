@@ -103,6 +103,16 @@ struct SettingsView: View {
                     Label("Web Search", systemImage: "globe")
                 }
 
+                Toggle(isOn: Binding(
+                    get: { settings.isMemoryConnectorEnabled },
+                    set: { newValue in
+                        settings.isMemoryConnectorEnabled = newValue
+                        settings.markUpdated()
+                    }
+                )) {
+                    Label("Memory", systemImage: "brain")
+                }
+
                 Picker(selection: Binding(
                     get: { settings.toolCallingMode },
                     set: { newValue in
@@ -123,6 +133,8 @@ struct SettingsView: View {
                     Label("Tool Calling", systemImage: "wrench.and.screwdriver")
                 }
             }
+
+            MCPSettingsView(settings: settings)
 
             Section("Generation") {
                 GenerationParametersTemperatureControl(parameters: parametersBinding)

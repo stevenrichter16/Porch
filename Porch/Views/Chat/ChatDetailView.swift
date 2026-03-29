@@ -14,7 +14,7 @@ struct ChatDetailView: View {
     @State private var editingDraft: MessageEditDraft?
     @State private var isShowingGitHubContextSheet = false
 
-    init(chat: ChatThread, settings: AppSettings, modelContext: ModelContext) {
+    init(chat: ChatThread, settings: AppSettings, modelContext: ModelContext, memoryConnector: MemoryConnector? = nil) {
         let chatID = chat.id
         self._chat = Bindable(chat)
         self._settings = Bindable(settings)
@@ -28,7 +28,8 @@ struct ChatDetailView: View {
             wrappedValue: ChatViewModel(
                 chat: chat,
                 settings: settings,
-                modelContext: modelContext
+                modelContext: modelContext,
+                memoryConnector: memoryConnector
             )
         )
     }
@@ -56,6 +57,10 @@ struct ChatDetailView: View {
                     set: { viewModel.nextMessageParameterOverride = $0 }
                 ),
                 isStreaming: viewModel.isStreaming,
+                pendingImages: Binding(
+                    get: { viewModel.pendingImages },
+                    set: { viewModel.pendingImages = $0 }
+                ),
                 onSend: viewModel.sendCurrentInput,
                 onStop: viewModel.stopGenerating
             )
@@ -69,13 +74,20 @@ struct ChatDetailView: View {
                         .font(.headline)
                         .lineLimit(1)
                         .truncationMode(.tail)
-                    Text(chat.modelID)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                    HStack(spacing: 6) {
+                        Text(chat.modelID)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        if let usage = viewModel.lastTokenUsage {
+                            Text("\(usage.formattedTotal)")
+                                .font(.system(.caption2, design: .monospaced))
+                                .foregroundStyle(PorchTheme.accent)
+                        }
+                    }
                 }
-                .frame(maxWidth: 220)
+                .frame(maxWidth: 260)
             }
 
             if settings.isGitHubConnectorEnabled {
@@ -172,7 +184,9 @@ struct ChatDetailView: View {
     }
 
     private var streamingBubbleModel: MessageBubbleModel? {
-        guard viewModel.isStreaming, !viewModel.streamingText.isEmpty else {
+        let hasContent = !viewModel.streamingText.isEmpty
+        let hasThinking = !viewModel.streamingThinkingText.isEmpty
+        guard viewModel.isStreaming, hasContent || hasThinking || viewModel.isModelThinking else {
             return nil
         }
 
@@ -185,7 +199,10 @@ struct ChatDetailView: View {
             finishReason: nil,
             isStreaming: true,
             isRegenerateEnabled: false,
-            isEditEnabled: false
+            isEditEnabled: false,
+            thinkingContent: hasThinking ? viewModel.streamingThinkingText : nil,
+            isModelThinking: viewModel.isModelThinking,
+            tokenUsage: viewModel.lastTokenUsage
         )
     }
 
@@ -245,7 +262,8 @@ struct ChatDetailView: View {
                 MessageBubble(
                     model: bubble,
                     onRegenerate: viewModel.regenerateLastResponse,
-                    onEdit: beginEditingMessage(_:)
+                    onEdit: beginEditingMessage(_:),
+                    onNavigateBranch: nil
                 )
                 .equatable()
                 .id(bubble.id)
@@ -255,7 +273,8 @@ struct ChatDetailView: View {
                 MessageBubble(
                     model: streamingBubbleModel,
                     onRegenerate: {},
-                    onEdit: { _ in }
+                    onEdit: { _ in },
+                    onNavigateBranch: nil
                 )
                 .id(MessageBubbleID.streaming)
             }

@@ -1,3 +1,4 @@
+import PhotosUI
 import SwiftUI
 
 struct InputBar: View {
@@ -5,16 +6,22 @@ struct InputBar: View {
     let globalParameters: GenerationParameters
     @Binding var nextMessageParameterOverride: GenerationParameters?
     let isStreaming: Bool
+    var pendingImages: Binding<[ImageAttachment]>?
     let onSend: () -> Void
     let onStop: () -> Void
 
     @FocusState private var isFocused: Bool
     @State private var isShowingOverrideSheet = false
+    @State private var selectedPhotoItems: [PhotosPickerItem] = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             if !overrideChips.isEmpty {
                 overrideChipRow
+            }
+
+            if let images = pendingImages?.wrappedValue, !images.isEmpty {
+                imagePreviewRow(images)
             }
 
             composerRow
@@ -23,6 +30,11 @@ struct InputBar: View {
         .padding(.vertical, 12)
         .background(PorchTheme.chatBackground)
         .sheet(isPresented: $isShowingOverrideSheet, content: overrideSheet)
+        .onChange(of: selectedPhotoItems) { _, newItems in
+            Task {
+                await loadSelectedPhotos(newItems)
+            }
+        }
     }
 
     private func buttonAction() {
@@ -60,11 +72,78 @@ struct InputBar: View {
     }
 
     private var composerRow: some View {
-        HStack(alignment: .bottom, spacing: 12) {
+        HStack(alignment: .bottom, spacing: 8) {
+            if pendingImages != nil {
+                attachmentButton
+            }
             composerTextField
             composerTuneButton
             composerSendButton
         }
+    }
+
+    private var attachmentButton: some View {
+        PhotosPicker(
+            selection: $selectedPhotoItems,
+            maxSelectionCount: 4,
+            matching: .images
+        ) {
+            Image(systemName: "plus.circle.fill")
+                .font(.system(size: 24))
+                .foregroundStyle(PorchTheme.accent)
+        }
+        .buttonStyle(.plain)
+        .disabled(isStreaming)
+        .accessibilityLabel("Attach images")
+    }
+
+    private func imagePreviewRow(_ images: [ImageAttachment]) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(images) { attachment in
+                    ZStack(alignment: .topTrailing) {
+                        if let uiImage = attachment.thumbnail {
+                            Image(uiImage: uiImage)
+                                .resizable()
+                                .aspectRatio(contentMode: .fill)
+                                .frame(width: 56, height: 56)
+                                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        }
+
+                        Button {
+                            pendingImages?.wrappedValue.removeAll { $0.id == attachment.id }
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.caption)
+                                .foregroundStyle(.white, .black.opacity(0.6))
+                        }
+                        .buttonStyle(.plain)
+                        .offset(x: 4, y: -4)
+                    }
+                }
+            }
+        }
+    }
+
+    private func loadSelectedPhotos(_ items: [PhotosPickerItem]) async {
+        var newAttachments: [ImageAttachment] = []
+        for item in items {
+            if let data = try? await item.loadTransferable(type: Data.self) {
+                #if canImport(UIKit)
+                let thumbnail = UIImage(data: data)?.preparingThumbnail(of: CGSize(width: 112, height: 112))
+                #else
+                let thumbnail: UIImage? = nil
+                #endif
+                let attachment = ImageAttachment(
+                    imageData: data,
+                    mimeType: "image/jpeg",
+                    thumbnail: thumbnail
+                )
+                newAttachments.append(attachment)
+            }
+        }
+        pendingImages?.wrappedValue = newAttachments
+        selectedPhotoItems = []
     }
 
     @ViewBuilder

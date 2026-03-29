@@ -8,7 +8,8 @@ enum PorchMigrationPlan: SchemaMigrationPlan {
             PorchSchemaV3.self,
             PorchSchemaV4.self,
             PorchSchemaV5.self,
-            PorchSchemaV6.self
+            PorchSchemaV6.self,
+            PorchSchemaV7.self
         ]
     }
 
@@ -18,7 +19,8 @@ enum PorchMigrationPlan: SchemaMigrationPlan {
             migrateV2ToV3,
             migrateV3ToV4,
             migrateV4ToV5,
-            migrateV5ToV6
+            migrateV5ToV6,
+            migrateV6ToV7
         ]
     }
 
@@ -74,6 +76,23 @@ enum PorchMigrationPlan: SchemaMigrationPlan {
             let settingsRecords = try context.fetch(FetchDescriptor<PorchSchemaV6.AppSettings>())
             for settings in settingsRecords {
                 settings.toolCallingModeRaw = ToolCallingMode.auto.rawValue
+                settings.markUpdated()
+            }
+
+            if !settingsRecords.isEmpty {
+                try context.save()
+            }
+        }
+    )
+
+    static let migrateV6ToV7 = MigrationStage.custom(
+        fromVersion: PorchSchemaV6.self,
+        toVersion: PorchSchemaV7.self,
+        willMigrate: { _ in },
+        didMigrate: { context in
+            let settingsRecords = try context.fetch(FetchDescriptor<PorchSchemaV7.AppSettings>())
+            for settings in settingsRecords {
+                settings.isMemoryConnectorEnabled = true
                 settings.markUpdated()
             }
 

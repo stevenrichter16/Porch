@@ -17,6 +17,10 @@ struct ContentView: View {
     @State private var preferredColumn = NavigationSplitViewColumn.sidebar
     @State private var isShowingSettings = false
 
+    private var memoryConnector: MemoryConnector {
+        MemoryConnector(modelContainer: modelContext.container)
+    }
+
     var body: some View {
         Group {
             if let settings = settingsRecords.first {
@@ -39,7 +43,8 @@ struct ContentView: View {
                             ChatDetailView(
                                 chat: selectedChat,
                                 settings: settings,
-                                modelContext: modelContext
+                                modelContext: modelContext,
+                                memoryConnector: memoryConnector
                             )
                         } else {
                             ContentUnavailableView(
@@ -119,5 +124,5 @@ struct ContentView: View {
 
 #Preview {
     ContentView()
-        .modelContainer(for: [AppSettings.self, ChatThread.self, ChatMessage.self], inMemory: true)
+        .modelContainer(for: [AppSettings.self, ChatThread.self, ChatMessage.self, MemoryEntry.self], inMemory: true)
 }

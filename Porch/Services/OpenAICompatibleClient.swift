@@ -147,6 +147,11 @@ actor OpenAICompatibleClient {
                         }
                     }
 
+                    // Emit usage if present (typically in the final chunk)
+                    if let tokenUsage = chunk.usage?.asTokenUsage {
+                        continuation.yield(.usage(tokenUsage))
+                    }
+
                     if let rawReason = chunk.choices.first?.finish_reason {
                         finishReason = ChatFinishReason(apiValue: rawReason)
                     }
@@ -207,13 +212,16 @@ actor OpenAICompatibleClient {
 
         let finishReason = firstChoice.finish_reason.map(ChatFinishReason.init(apiValue:))
 
+        let usage = decoded.usage?.asTokenUsage
+
         // Check for tool calls
         if let toolCalls = firstChoice.message.tool_calls, !toolCalls.isEmpty {
             Self.logger.info("[nonStream] result hasToolCalls=\(toolCalls.count) tools=\(toolCalls.map(\.function.name).joined(separator: ",")) finishReason=\(finishReason?.apiValue ?? "nil")")
             return NonStreamingCompletionResult(
                 content: firstChoice.message.content,
                 toolCalls: toolCalls,
-                finishReason: finishReason
+                finishReason: finishReason,
+                usage: usage
             )
         }
 
@@ -224,7 +232,7 @@ actor OpenAICompatibleClient {
         }
 
         Self.logger.info("[nonStream] result contentLength=\(content.count) finishReason=\(finishReason?.apiValue ?? "nil")")
-        return NonStreamingCompletionResult(content: content, finishReason: finishReason)
+        return NonStreamingCompletionResult(content: content, finishReason: finishReason, usage: usage)
     }
 
     func normalizeBaseURL(_ input: String) throws -> URL {

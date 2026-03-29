@@ -14,7 +14,7 @@ struct PorchApp: App {
     var sharedModelContainer: ModelContainer = {
         let logger = PorchApp.logger
         let isRunningTests = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
-        let schema = Schema(versionedSchema: PorchSchemaV5.self)
+        let schema = Schema(versionedSchema: PorchSchemaV7.self)
         let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: isRunningTests)
 
         do {
@@ -35,7 +35,7 @@ struct PorchApp: App {
             } catch {
                 logger.error("[startup] previewBackfillFailed error=\(error.localizedDescription)")
             }
-            logger.info("[launch] schemaVersion=V5")
+            logger.info("[launch] schemaVersion=V7")
             return container
         } catch {
             logger.fault("[startup] modelContainerInitFailed error=\(error.localizedDescription)")

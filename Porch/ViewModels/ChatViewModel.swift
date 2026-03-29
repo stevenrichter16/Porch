@@ -11,7 +11,11 @@ final class ChatViewModel: ObservableObject {
     @Published var composerText = ""
     @Published var nextMessageParameterOverride: GenerationParameters?
     @Published var streamingText = ""
+    @Published var streamingThinkingText = ""
+    @Published var isModelThinking = false
+    @Published var pendingImages: [ImageAttachment] = []
     @Published var isStreaming = false
+    @Published var lastTokenUsage: TokenUsage?
     @Published var errorMessage: String?
     @Published var infoMessage: String?
     @Published private(set) var pendingGitHubWriteApproval: PendingGitHubWriteApproval?
@@ -25,6 +29,8 @@ final class ChatViewModel: ObservableObject {
     private let githubConnector: GitHubConnector
     private let webSearchConnector: WebSearchConnector
     private let logStoreConnector: LogStoreConnector
+    private let memoryConnector: MemoryConnector?
+    private var mcpConnectors: [MCPConnector] = []
 
     private var streamTask: Task<Void, Never>?
     private var stopRequested = false
@@ -39,7 +45,8 @@ final class ChatViewModel: ObservableObject {
         keychain: KeychainStoreProtocol = KeychainStore(),
         githubConnector: GitHubConnector = GitHubConnector(),
         webSearchConnector: WebSearchConnector = WebSearchConnector(),
-        logStoreConnector: LogStoreConnector = LogStoreConnector()
+        logStoreConnector: LogStoreConnector = LogStoreConnector(),
+        memoryConnector: MemoryConnector? = nil
     ) {
         self.chat = chat
         self.settings = settings
@@ -49,6 +56,7 @@ final class ChatViewModel: ObservableObject {
         self.githubConnector = githubConnector
         self.webSearchConnector = webSearchConnector
         self.logStoreConnector = logStoreConnector
+        self.memoryConnector = memoryConnector
     }
 
     deinit {
@@ -150,7 +158,16 @@ final class ChatViewModel: ObservableObject {
     }
 
     private func send(messageText: String, parameters: GenerationParameters) {
-        let userMessage = ChatMessage(role: .user, content: messageText, thread: chat)
+        let images = pendingImages
+        pendingImages = []
+
+        let userMessage = ChatMessage(
+            role: .user,
+            content: messageText,
+            thread: chat,
+            imageData: images.first?.imageData,
+            imageMimeType: images.first?.mimeType
+        )
         modelContext.insert(userMessage)
         if chat.isUntitled {
             chat.title = ChatTitleGenerator.title(for: messageText)
@@ -170,6 +187,9 @@ final class ChatViewModel: ObservableObject {
         errorMessage = nil
         infoMessage = nil
         streamingText = ""
+        streamingThinkingText = ""
+        isModelThinking = false
+        lastTokenUsage = nil
         isStreaming = true
         stopRequested = false
         gitHubToolLoopState.reset()
@@ -190,6 +210,14 @@ final class ChatViewModel: ObservableObject {
     }
 
     private func runToolCallingLoop(configuration: ServerConfiguration, parameters: GenerationParameters) async {
+        // Pre-fetch memories for context injection
+        if settings.isMemoryConnectorEnabled, let memoryConnector {
+            cachedMemorySnippet = await memoryConnector.memoryContextSnippet()
+        }
+
+        // Discover MCP tools from configured servers
+        await discoverMCPTools()
+
         var roundsRemaining = Self.maxToolCallRounds
 
         while roundsRemaining > 0 {
@@ -269,6 +297,7 @@ final class ChatViewModel: ObservableObject {
         var draftText = ""
         var finishReason: ChatFinishReason?
         var receivedToolCalls: [ToolCall]?
+        var roundUsage: TokenUsage?
         let clock = ContinuousClock()
         var lastPublishedAt = clock.now
         let roundStartTime = clock.now
@@ -286,6 +315,9 @@ final class ChatViewModel: ObservableObject {
                     )
                 case .toolCalls(let calls):
                     receivedToolCalls = calls
+                case .usage(let usage):
+                    roundUsage = usage
+                    lastTokenUsage = usage
                 case .completed(let reason):
                     finishReason = reason
                 }
@@ -310,7 +342,7 @@ final class ChatViewModel: ObservableObject {
 
             // Normal text completion
             Self.logger.notice("Stream round completed in \(roundDuration) with text, responseLength=\(draftText.count) finishReason=\(String(describing: finishReason))")
-            persistAssistantDraft(text: draftText, isPartial: false, finishReason: finishReason)
+            persistAssistantDraft(text: draftText, isPartial: false, finishReason: finishReason, usage: roundUsage)
             return .textCompleted(finishReason)
 
         } catch is CancellationError {
@@ -354,7 +386,17 @@ final class ChatViewModel: ObservableObject {
         // Log store is always available for LLM self-debugging
         tools.append(contentsOf: logStoreConnector.toolDefinitions)
 
-        Self.logger.debug("Resolved \(tools.count) tools: webSearch=\(webSearchEnabled)/\(webSearchConfigured) github=\(githubEnabled)/\(githubConfigured)/\(hasGithubContext) logStore=true")
+        // Memory connector
+        if settings.isMemoryConnectorEnabled, let memoryConnector {
+            tools.append(contentsOf: memoryConnector.toolDefinitions)
+        }
+
+        // MCP connectors
+        for mcpConnector in mcpConnectors {
+            tools.append(contentsOf: mcpConnector.toolDefinitions)
+        }
+
+        Self.logger.debug("Resolved \(tools.count) tools: webSearch=\(webSearchEnabled)/\(webSearchConfigured) github=\(githubEnabled)/\(githubConfigured)/\(hasGithubContext) logStore=true memory=\(settings.isMemoryConnectorEnabled) mcp=\(mcpConnectors.count)")
         return tools.isEmpty ? nil : tools
     }
 
@@ -373,6 +415,38 @@ final class ChatViewModel: ObservableObject {
             } catch {
                 Self.logger.error("Tool \(toolCall.function.name) failed in \(ContinuousClock.now - execStart): \(error.localizedDescription)")
                 return "{\"error\": \"\(error.localizedDescription)\"}"
+            }
+        }
+
+        if let memoryConnector,
+           memoryConnector.toolDefinitions.contains(where: { $0.function.name == toolCall.function.name }) {
+            do {
+                let result = try await memoryConnector.execute(
+                    toolName: toolCall.function.name,
+                    arguments: toolCall.function.arguments
+                )
+                Self.logger.notice("Tool \(toolCall.function.name) completed in \(ContinuousClock.now - execStart) resultLength=\(result.count)")
+                return result
+            } catch {
+                Self.logger.error("Tool \(toolCall.function.name) failed in \(ContinuousClock.now - execStart): \(error.localizedDescription)")
+                return "{\"error\": \"\(error.localizedDescription)\"}"
+            }
+        }
+
+        // MCP connectors
+        for mcpConnector in mcpConnectors {
+            if mcpConnector.toolDefinitions.contains(where: { $0.function.name == toolCall.function.name }) {
+                do {
+                    let result = try await mcpConnector.execute(
+                        toolName: toolCall.function.name,
+                        arguments: toolCall.function.arguments
+                    )
+                    Self.logger.notice("MCP tool \(toolCall.function.name) completed in \(ContinuousClock.now - execStart) resultLength=\(result.count)")
+                    return result
+                } catch {
+                    Self.logger.error("MCP tool \(toolCall.function.name) failed in \(ContinuousClock.now - execStart): \(error.localizedDescription)")
+                    return "{\"error\": \"\(error.localizedDescription)\"}"
+                }
             }
         }
 
@@ -505,10 +579,20 @@ final class ChatViewModel: ObservableObject {
         )
     }
 
+    private var cachedMemorySnippet: String?
+
     private func buildOutboundMessages() throws -> [OpenAIChatMessage] {
         var messages: [OpenAIChatMessage] = []
         if !chat.systemPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             messages.append(OpenAIChatMessage(role: MessageRole.system.rawValue, content: chat.systemPrompt))
+        }
+
+        // Inject stored memories into context
+        if settings.isMemoryConnectorEnabled, let snippet = cachedMemorySnippet, !snippet.isEmpty {
+            messages.append(OpenAIChatMessage(
+                role: MessageRole.system.rawValue,
+                content: snippet
+            ))
         }
 
         if settings.isGitHubConnectorEnabled,
@@ -555,12 +639,25 @@ final class ChatViewModel: ObservableObject {
                 messages.append(msg)
 
             default:
-                messages.append(
-                    OpenAIChatMessage(
+                if let imageData = message.imageData,
+                   let mimeType = message.imageMimeType {
+                    let base64 = imageData.base64EncodedString()
+                    let dataURL = "data:\(mimeType);base64,\(base64)"
+                    messages.append(OpenAIChatMessage(
                         role: message.role.rawValue,
-                        content: message.content
+                        contentParts: [
+                            .text(message.content),
+                            .imageURL(dataURL)
+                        ]
+                    ))
+                } else {
+                    messages.append(
+                        OpenAIChatMessage(
+                            role: message.role.rawValue,
+                            content: message.content
+                        )
                     )
-                )
+                }
             }
         }
 
@@ -807,23 +904,64 @@ final class ChatViewModel: ObservableObject {
     }
 
     private func flushStreamingDraft(_ draftText: String) {
-        guard streamingText != draftText else { return }
-        streamingText = draftText
+        let isThinking = ThinkingContentParser.isInsideThinkBlock(draftText)
+        isModelThinking = isThinking
+
+        if isThinking {
+            // While inside a think block, show the thinking content being generated
+            let parsed = ThinkingContentParser.parse(draftText)
+            // The unclosed think block is at the end — extract it
+            let thinkingInProgress = extractOpenThinkBlock(from: draftText)
+            streamingThinkingText = parsed.thinking.isEmpty ? thinkingInProgress : parsed.thinking + "\n\n" + thinkingInProgress
+            streamingText = parsed.visible
+        } else {
+            let parsed = ThinkingContentParser.parse(draftText)
+            streamingThinkingText = parsed.thinking
+            streamingText = parsed.visible
+        }
     }
 
-    private func persistAssistantDraft(text: String, isPartial: Bool, finishReason: ChatFinishReason?) {
+    private func extractOpenThinkBlock(from text: String) -> String {
+        // Find the last open <think> or <thinking> tag without a matching close
+        let patterns: [(open: String, close: String)] = [
+            ("<think>", "</think>"),
+            ("<thinking>", "</thinking>")
+        ]
+
+        for (open, close) in patterns {
+            if let openRange = text.range(of: open, options: .backwards) {
+                let afterOpen = text[openRange.upperBound...]
+                if afterOpen.range(of: close) == nil {
+                    return String(afterOpen).trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+            }
+        }
+        return ""
+    }
+
+    private func persistAssistantDraft(text: String, isPartial: Bool, finishReason: ChatFinishReason?, usage: TokenUsage? = nil) {
         let finalText = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !finalText.isEmpty else {
             streamingText = ""
+            streamingThinkingText = ""
+            isModelThinking = false
             return
         }
 
+        // Separate thinking content from visible content
+        let parsed = ThinkingContentParser.parse(finalText)
+        let visibleContent = parsed.visible.isEmpty ? finalText : parsed.visible
+        let thinkingContent = parsed.thinking.isEmpty ? nil : parsed.thinking
+
         let assistantMessage = ChatMessage(
             role: .assistant,
-            content: finalText,
+            content: visibleContent,
             thread: chat,
             isPartial: isPartial,
-            finishReason: finishReason
+            finishReason: finishReason,
+            thinkingContent: thinkingContent,
+            promptTokens: usage?.promptTokens,
+            completionTokens: usage?.completionTokens
         )
         modelContext.insert(assistantMessage)
         chat.applyMessageMutation(latestMessage: assistantMessage)
@@ -833,6 +971,8 @@ final class ChatViewModel: ObservableObject {
             Self.logger.error("Save failed in persistAssistantDraft: \(error.localizedDescription)")
         }
         streamingText = ""
+        streamingThinkingText = ""
+        isModelThinking = false
     }
 
     private func shouldRefreshTitle(
@@ -859,6 +999,34 @@ final class ChatViewModel: ObservableObject {
             "github_commit_file_changes": "GitHub Branch & Push"
         ]
         return mapping[name] ?? name
+    }
+
+    private func discoverMCPTools() async {
+        mcpConnectors = []
+        let enabledConfigs = settings.mcpServerConfigs.filter(\.isEnabled)
+        guard !enabledConfigs.isEmpty else { return }
+
+        for config in enabledConfigs {
+            guard let url = URL(string: config.url) else { continue }
+            var headers: [String: String] = [:]
+            if let auth = config.authorizationHeader {
+                headers["Authorization"] = auth
+            }
+
+            let connector = MCPConnector(
+                serverURL: url,
+                displayName: config.name,
+                headers: headers
+            )
+
+            do {
+                try await connector.discoverTools()
+                mcpConnectors.append(connector)
+                Self.logger.notice("MCP server \(config.name) discovered \(connector.toolDefinitions.count) tools")
+            } catch {
+                Self.logger.error("MCP server \(config.name) discovery failed: \(error.localizedDescription)")
+            }
+        }
     }
 
     private func encodeToolResult<T: Encodable>(_ result: T) throws -> String {
