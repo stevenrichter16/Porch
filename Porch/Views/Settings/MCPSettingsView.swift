@@ -54,9 +54,10 @@ struct MCPSettingsView: View {
             Button("Add") {
                 let trimmedURL = newURL.trimmingCharacters(in: .whitespacesAndNewlines)
                 let trimmedName = newName.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !trimmedURL.isEmpty else { return }
-            guard URL(string: trimmedURL) != nil else {
-                showInvalidURLError = true
+                guard !trimmedURL.isEmpty, URL(string: trimmedURL) != nil else {
+                if !trimmedURL.isEmpty {
+                    showInvalidURLError = true
+                }
                 return
             }
 

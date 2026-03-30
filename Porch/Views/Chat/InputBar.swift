@@ -164,7 +164,10 @@ struct InputBar: View {
         let header = [UInt8](data.prefix(4))
         if header.starts(with: [0x89, 0x50, 0x4E, 0x47]) { return "image/png" }
         if header.starts(with: [0x47, 0x49, 0x46]) { return "image/gif" }
-        if header.starts(with: [0x52, 0x49, 0x46, 0x46]) { return "image/webp" }
+        // RIFF container with WEBP signature at bytes 8-11
+        if data.count >= 12,
+           header.starts(with: [0x52, 0x49, 0x46, 0x46]),
+           [UInt8](data[8..<12]) == [0x57, 0x45, 0x42, 0x50] { return "image/webp" }
         return "image/jpeg"
     }
 

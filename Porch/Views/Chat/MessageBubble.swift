@@ -172,7 +172,11 @@ struct MessageBubble: View, Equatable {
                 }
             }
 
-            MessageCopyButton(content: model.content.isEmpty ? (model.thinkingContent ?? "") : model.content)
+            MessageCopyButton(
+                content: model.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ? (model.thinkingContent ?? "")
+                    : model.content
+            )
         }
     }
 
@@ -374,6 +378,7 @@ struct ThinkingDisclosure: View {
     let content: String
     let isStreaming: Bool
     @State private var isExpanded: Bool
+    @State private var hasManuallyToggled = false
 
     init(content: String, isStreaming: Bool = false) {
         self.content = content
@@ -381,9 +386,19 @@ struct ThinkingDisclosure: View {
         self._isExpanded = State(initialValue: isStreaming)
     }
 
+    // Collapse automatically when streaming ends, unless user manually toggled
+    private func syncExpansionWithStreaming(_ streaming: Bool) {
+        if !streaming, !hasManuallyToggled {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                isExpanded = false
+            }
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Button {
+                hasManuallyToggled = true
                 withAnimation(.easeInOut(duration: 0.2)) {
                     isExpanded.toggle()
                 }
@@ -399,6 +414,9 @@ struct ThinkingDisclosure: View {
                 .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
+            .onChange(of: isStreaming) { _, newValue in
+                syncExpansionWithStreaming(newValue)
+            }
 
             if isExpanded {
                 ScrollView {
