@@ -313,14 +313,14 @@ final class ChatViewModel: ObservableObject {
                         activeGitHubToolActivity = nil
                     }
                     streamingText = ""
-<<<<<<< ours
 
                     // Refresh memory context if a memory was saved this round
                     if settings.isMemoryConnectorEnabled,
                        let memoryConnector,
                        toolCalls.contains(where: { $0.function.name == "save_memory" }) {
                         cachedMemorySnippet = await memoryConnector.memoryContextSnippet()
-=======
+                    }
+
                     activeGitHubToolActivity = nil
                     gitHubExecutionState.finishRoundIfNeeded(logger: Self.logger)
                     toolLoopExecutionState.isAnswerOnlyRound = gitHubExecutionState.answerFromEvidenceMode
@@ -328,39 +328,26 @@ final class ChatViewModel: ObservableObject {
                         Self.logger.warning("Stopping tool loop after repeated blocked GitHub tool calls in synthesis mode.")
                         infoMessage = "Stopped after repeated GitHub tool calls during evidence-based synthesis."
                         return
->>>>>>> theirs
                     }
                     // Continue the loop for another round
 
                 case .cancelled:
-<<<<<<< ours
                     Self.logger.notice("Tool loop cancelled in round \(roundNumber)")
+                    activeGitHubToolActivity = nil
                     return
 
                 case .error(let error):
                     Self.logger.error("Tool loop failed in round \(roundNumber): \(error.localizedDescription)")
-=======
-                    Self.logger.notice("Tool loop cancelled in round \(roundNumber, privacy: .public)")
                     activeGitHubToolActivity = nil
-                    return
-
-                case .error(let error):
-                    Self.logger.error("Tool loop failed in round \(roundNumber, privacy: .public): \(error.localizedDescription, privacy: .public)")
-                    activeGitHubToolActivity = nil
->>>>>>> theirs
                     errorMessage = error.localizedDescription
                     return
                 }
             } catch {
-<<<<<<< ours
                 Self.logger.error("Failed to build or run tool loop round \(roundNumber): \(error.localizedDescription)")
                 streamingText = ""
                 streamingThinkingText = ""
                 isModelThinking = false
-=======
-                Self.logger.error("Failed to build or run tool loop round \(roundNumber, privacy: .public): \(error.localizedDescription, privacy: .public)")
                 activeGitHubToolActivity = nil
->>>>>>> theirs
                 errorMessage = error.localizedDescription
                 return
             }
@@ -426,12 +413,8 @@ final class ChatViewModel: ObservableObject {
 
             // If we received tool calls, return them for the loop to handle
             if let toolCalls = receivedToolCalls, !toolCalls.isEmpty {
-<<<<<<< ours
-                Self.logger.notice("Stream round completed in \(roundDuration) with \(toolCalls.count) native tool call(s), responseLength=\(draftText.count)")
-=======
                 toolLoopExecutionState.recordObservedNativeToolCalls()
-                Self.logger.notice("Stream round completed in \(roundDuration, privacy: .public) with \(toolCalls.count, privacy: .public) native tool call(s), responseLength=\(draftText.count, privacy: .public)")
->>>>>>> theirs
+                Self.logger.notice("Stream round completed in \(roundDuration) with \(toolCalls.count) native tool call(s), responseLength=\(draftText.count)")
                 let content = draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : draftText
                 printFullStreamedLLMOutput(
                     draftText,
@@ -463,11 +446,7 @@ final class ChatViewModel: ObservableObject {
             }
 
             // Normal text completion
-<<<<<<< ours
             Self.logger.notice("Stream round completed in \(roundDuration) with text, responseLength=\(draftText.count) finishReason=\(String(describing: finishReason))")
-            persistAssistantDraft(text: draftText, isPartial: false, finishReason: finishReason, usage: roundUsage)
-=======
-            Self.logger.notice("Stream round completed in \(roundDuration, privacy: .public) with text, responseLength=\(draftText.count, privacy: .public) finishReason=\(String(describing: finishReason), privacy: .public)")
             printFullStreamedLLMOutput(
                 draftText,
                 finishReason: finishReason,
@@ -476,12 +455,11 @@ final class ChatViewModel: ObservableObject {
             )
             if toolLoopExecutionState.hasPersistedToolResultInCurrentRun,
                draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Self.logger.warning("Ignoring blank assistant completion after tool use and requesting one synthesis retry. finishReason=\(String(describing: finishReason), privacy: .public)")
+                Self.logger.warning("Ignoring blank assistant completion after tool use and requesting one synthesis retry. finishReason=\(String(describing: finishReason))")
                 streamingText = ""
                 return .blankTextAfterToolUse(finishReason)
             }
-            persistAssistantDraft(text: draftText, isPartial: false, finishReason: finishReason)
->>>>>>> theirs
+            persistAssistantDraft(text: draftText, isPartial: false, finishReason: finishReason, usage: roundUsage)
             return .textCompleted(finishReason)
 
         } catch is CancellationError {
@@ -611,8 +589,7 @@ final class ChatViewModel: ObservableObject {
     }
 
     private func executeToolCall(_ toolCall: ToolCall) async -> String? {
-<<<<<<< ours
-        let execStart = ContinuousClock.now
+        let startedAt = Date()
         Self.logger.notice("Executing tool \(toolCall.function.name) callId=\(toolCall.id) args=\(toolCall.function.arguments.prefix(500))")
 
         if logStoreConnector.toolDefinitions.contains(where: { $0.function.name == toolCall.function.name }) {
@@ -621,10 +598,10 @@ final class ChatViewModel: ObservableObject {
                     toolName: toolCall.function.name,
                     arguments: toolCall.function.arguments
                 )
-                Self.logger.notice("Tool \(toolCall.function.name) completed in \(ContinuousClock.now - execStart) resultLength=\(result.count)")
+                Self.logger.notice("Tool \(toolCall.function.name) completed in \(Self.elapsedMilliseconds(since: startedAt))ms resultLength=\(result.count)")
                 return result
             } catch {
-                Self.logger.error("Tool \(toolCall.function.name) failed in \(ContinuousClock.now - execStart): \(error.localizedDescription)")
+                Self.logger.error("Tool \(toolCall.function.name) failed after \(Self.elapsedMilliseconds(since: startedAt))ms: \(error.localizedDescription)")
                 return "{\"error\": \"\(error.localizedDescription)\"}"
             }
         }
@@ -636,10 +613,10 @@ final class ChatViewModel: ObservableObject {
                     toolName: toolCall.function.name,
                     arguments: toolCall.function.arguments
                 )
-                Self.logger.notice("Tool \(toolCall.function.name) completed in \(ContinuousClock.now - execStart) resultLength=\(result.count)")
+                Self.logger.notice("Tool \(toolCall.function.name) completed in \(Self.elapsedMilliseconds(since: startedAt))ms resultLength=\(result.count)")
                 return result
             } catch {
-                Self.logger.error("Tool \(toolCall.function.name) failed in \(ContinuousClock.now - execStart): \(error.localizedDescription)")
+                Self.logger.error("Tool \(toolCall.function.name) failed after \(Self.elapsedMilliseconds(since: startedAt))ms: \(error.localizedDescription)")
                 return "{\"error\": \"\(error.localizedDescription)\"}"
             }
         }
@@ -652,19 +629,15 @@ final class ChatViewModel: ObservableObject {
                         toolName: toolCall.function.name,
                         arguments: toolCall.function.arguments
                     )
-                    Self.logger.notice("MCP tool \(toolCall.function.name) completed in \(ContinuousClock.now - execStart) resultLength=\(result.count)")
+                    Self.logger.notice("MCP tool \(toolCall.function.name) completed in \(Self.elapsedMilliseconds(since: startedAt))ms resultLength=\(result.count)")
                     return result
                 } catch {
-                    Self.logger.error("MCP tool \(toolCall.function.name) failed in \(ContinuousClock.now - execStart): \(error.localizedDescription)")
+                    Self.logger.error("MCP tool \(toolCall.function.name) failed after \(Self.elapsedMilliseconds(since: startedAt))ms: \(error.localizedDescription)")
                     return "{\"error\": \"\(error.localizedDescription)\"}"
                 }
             }
         }
 
-=======
-        let startedAt = Date()
-        Self.logger.notice("Executing tool \(toolCall.function.name, privacy: .public) callId=\(toolCall.id, privacy: .public) args=\(toolCall.function.arguments.prefix(500), privacy: .public)")
->>>>>>> theirs
         if settings.isWebSearchConnectorEnabled,
            webSearchConnector.toolDefinitions.contains(where: { $0.function.name == toolCall.function.name }) {
             do {
@@ -672,17 +645,10 @@ final class ChatViewModel: ObservableObject {
                     toolName: toolCall.function.name,
                     arguments: toolCall.function.arguments
                 )
-<<<<<<< ours
-                Self.logger.notice("Tool \(toolCall.function.name) completed in \(ContinuousClock.now - execStart) resultLength=\(result.count)")
+                Self.logger.notice("Web tool \(toolCall.function.name) completed in \(Self.elapsedMilliseconds(since: startedAt))ms resultBytes=\(result.count)")
                 return result
             } catch {
-                Self.logger.error("Tool \(toolCall.function.name) failed in \(ContinuousClock.now - execStart): \(error.localizedDescription)")
-=======
-                Self.logger.notice("Web tool \(toolCall.function.name, privacy: .public) completed in \(Self.elapsedMilliseconds(since: startedAt), privacy: .public)ms resultBytes=\(result.count, privacy: .public)")
-                return result
-            } catch {
-                Self.logger.error("Web tool \(toolCall.function.name, privacy: .public) failed after \(Self.elapsedMilliseconds(since: startedAt), privacy: .public)ms: \(error.localizedDescription, privacy: .public)")
->>>>>>> theirs
+                Self.logger.error("Web tool \(toolCall.function.name) failed after \(Self.elapsedMilliseconds(since: startedAt))ms: \(error.localizedDescription)")
                 return "{\"error\": \"\(error.localizedDescription)\"}"
             }
         }
@@ -700,9 +666,6 @@ final class ChatViewModel: ObservableObject {
                 return "{\"error\":\"GitHub tools require a selected repository and branch in this chat.\"}"
             }
 
-<<<<<<< ours
-            Self.logger.notice("Executing GitHub tool \(toolCall.function.name) for \(githubContext.repositoryLabel) on branch \(githubContext.branch)")
-=======
             gitHubExecutionState.markGitHubToolUsed()
             let effectiveArguments = repairGitHubToolArgumentsIfNeeded(
                 toolName: toolCall.function.name,
@@ -715,8 +678,7 @@ final class ChatViewModel: ObservableObject {
                 branch: githubContext.branch,
                 statusLabel: "Running"
             )
-            Self.logger.notice("Executing GitHub tool \(toolCall.function.name, privacy: .public) for \(githubContext.repositoryLabel, privacy: .public) on branch \(githubContext.branch, privacy: .public)")
->>>>>>> theirs
+            Self.logger.notice("Executing GitHub tool \(toolCall.function.name) for \(githubContext.repositoryLabel) on branch \(githubContext.branch)")
 
             if gitHubExecutionState.answerFromEvidenceMode {
                 let advisory = GitHubToolAdvisoryResult(
@@ -751,13 +713,7 @@ final class ChatViewModel: ObservableObject {
                     arguments: effectiveArguments,
                     context: githubContext
                 )
-<<<<<<< ours
                 Self.logger.notice("Prepared GitHub write request for \(request.repositoryFullName) base=\(request.resolvedBaseRef) proposedBranch=\(request.proposedBranchName) changeCount=\(request.changes.count)")
-                switch await waitForGitHubWriteApproval(request: request) {
-                case .approve(let branchName, let commitMessage):
-                    Self.logger.notice("User approved GitHub write for \(request.repositoryFullName) branch=\(branchName) commitLength=\(commitMessage.count)")
-=======
-                Self.logger.notice("Prepared GitHub write request for \(request.repositoryFullName, privacy: .public) base=\(request.resolvedBaseRef, privacy: .public) proposedBranch=\(request.proposedBranchName, privacy: .public) changeCount=\(request.changes.count, privacy: .public)")
                 activeGitHubToolActivity = GitHubToolActivity(
                     toolName: toolCall.function.name,
                     arguments: effectiveArguments,
@@ -767,7 +723,7 @@ final class ChatViewModel: ObservableObject {
                 )
                 switch await waitForGitHubWriteApproval(request: request) {
                 case .approve(let branchName, let commitMessage):
-                    Self.logger.notice("User approved GitHub write for \(request.repositoryFullName, privacy: .public) branch=\(branchName, privacy: .public) commitLength=\(commitMessage.count, privacy: .public)")
+                    Self.logger.notice("User approved GitHub write for \(request.repositoryFullName) branch=\(branchName) commitLength=\(commitMessage.count)")
                     activeGitHubToolActivity = GitHubToolActivity(
                         toolName: toolCall.function.name,
                         arguments: effectiveArguments,
@@ -775,24 +731,18 @@ final class ChatViewModel: ObservableObject {
                         branch: githubContext.branch,
                         statusLabel: "Pushing changes"
                     )
->>>>>>> theirs
                     streamingText = "Creating GitHub branch and pushing changes..."
                     let result = try await githubConnector.executeApprovedWrite(
                         request,
                         branchName: branchName,
                         commitMessage: commitMessage
                     )
-<<<<<<< ours
-                    Self.logger.notice("GitHub write completed for \(request.repositoryFullName) branch=\(result.branch_name) commit=\(result.commit_sha)")
-                    return try encodeToolResult(result)
-=======
                     gitHubExecutionState.recordWriteProgress(paths: request.changes.map(\.path))
                     gitHubExecutionState.invalidateValidatedRepositories(for: githubContext)
                     let encodedResult = try encodeToolResult(result)
-                    Self.logger.notice("GitHub write completed for \(request.repositoryFullName, privacy: .public) branch=\(result.branch_name, privacy: .public) commit=\(result.commit_sha, privacy: .public) totalMs=\(Self.elapsedMilliseconds(since: startedAt), privacy: .public)")
+                    Self.logger.notice("GitHub write completed for \(request.repositoryFullName) branch=\(result.branch_name) commit=\(result.commit_sha) totalMs=\(Self.elapsedMilliseconds(since: startedAt))")
                     activeGitHubToolActivity = nil
                     return encodedResult
->>>>>>> theirs
 
                 case .cancelByUser:
                     Self.logger.notice("User cancelled GitHub write approval for \(request.repositoryFullName)")
@@ -827,19 +777,12 @@ final class ChatViewModel: ObservableObject {
                 result: executionResult.output,
                 context: githubContext
             )
-<<<<<<< ours
-            Self.logger.notice("Tool \(toolCall.function.name) completed in \(ContinuousClock.now - execStart) resultLength=\(result.count)")
-            return result
-        } catch {
-            Self.logger.error("Tool \(toolCall.function.name) failed in \(ContinuousClock.now - execStart): \(error.localizedDescription)")
-=======
-            Self.logger.notice("GitHub tool \(toolCall.function.name, privacy: .public) completed for \(githubContext.repositoryLabel, privacy: .public) in \(Self.elapsedMilliseconds(since: startedAt), privacy: .public)ms resultBytes=\(executionResult.output.count, privacy: .public)")
+            Self.logger.notice("GitHub tool \(toolCall.function.name) completed for \(githubContext.repositoryLabel) in \(Self.elapsedMilliseconds(since: startedAt))ms resultBytes=\(executionResult.output.count)")
             activeGitHubToolActivity = nil
             return executionResult.output
         } catch {
-            Self.logger.error("GitHub tool \(toolCall.function.name, privacy: .public) failed after \(Self.elapsedMilliseconds(since: startedAt), privacy: .public)ms: \(error.localizedDescription, privacy: .public)")
+            Self.logger.error("GitHub tool \(toolCall.function.name) failed after \(Self.elapsedMilliseconds(since: startedAt))ms: \(error.localizedDescription)")
             activeGitHubToolActivity = nil
->>>>>>> theirs
             return "{\"error\": \"\(error.localizedDescription)\"}"
         }
     }
@@ -908,12 +851,9 @@ final class ChatViewModel: ObservableObject {
         )
     }
 
-<<<<<<< ours
     private var cachedMemorySnippet: String?
     private var imageBase64Cache: [UUID: String] = [:]
 
-    private func buildOutboundMessages() throws -> [OpenAIChatMessage] {
-=======
     private func latestUserPromptText() -> String {
         if let latestUserMessage = chat.sortedMessages.last(where: { $0.role == .user })?.content,
            !latestUserMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -925,21 +865,20 @@ final class ChatViewModel: ObservableObject {
     }
 
     private func buildOutboundMessages(toolPromptTools: [ToolDefinition]?) throws -> [OpenAIChatMessage] {
->>>>>>> theirs
         var messages: [OpenAIChatMessage] = []
         let usePromptBasedReplay = toolLoopExecutionState.shouldUsePromptBasedReplay(for: settings.toolCallingMode)
         if !chat.systemPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             messages.append(OpenAIChatMessage(role: MessageRole.system.rawValue, content: chat.systemPrompt))
         }
 
-<<<<<<< ours
         // Inject stored memories into context
         if settings.isMemoryConnectorEnabled, let snippet = cachedMemorySnippet, !snippet.isEmpty {
             messages.append(OpenAIChatMessage(
                 role: MessageRole.system.rawValue,
                 content: snippet
             ))
-=======
+        }
+
         if shouldInjectToolCallingPrompt(tools: toolPromptTools),
            let toolPromptTools {
             messages.append(
@@ -951,7 +890,6 @@ final class ChatViewModel: ObservableObject {
                     )
                 )
             )
->>>>>>> theirs
         }
 
         if settings.isGitHubConnectorEnabled,
@@ -1100,13 +1038,9 @@ final class ChatViewModel: ObservableObject {
             default: break
             }
         }
-<<<<<<< ours
-        Self.logger.notice("Outbound messages: \(messages.count) total (system=\(systemMsgCount) user=\(userMsgCount) assistant=\(assistantMsgCount) tool=\(toolMsgCount)) totalChars=\(totalChars)")
-=======
         let replayStyleLabel = usePromptBasedReplay ? "promptBased" : "native"
         let recoveryActive = toolLoopExecutionState.didAttemptBlankToolResponseRecovery
-        Self.logger.notice("Outbound messages: \(messages.count, privacy: .public) total (system=\(systemMsgCount, privacy: .public) user=\(userMsgCount, privacy: .public) assistant=\(assistantMsgCount, privacy: .public) tool=\(toolMsgCount, privacy: .public)) totalChars=\(totalChars, privacy: .public) toolReplay=\(replayStyleLabel, privacy: .public) blankRecovery=\(recoveryActive, privacy: .public)")
->>>>>>> theirs
+        Self.logger.notice("Outbound messages: \(messages.count) total (system=\(systemMsgCount) user=\(userMsgCount) assistant=\(assistantMsgCount) tool=\(toolMsgCount)) totalChars=\(totalChars) toolReplay=\(replayStyleLabel) blankRecovery=\(recoveryActive)")
         return messages
     }
 
@@ -1533,16 +1467,6 @@ final class ChatViewModel: ObservableObject {
                 return try? encodeToolResult(advisory)
             }
 
-<<<<<<< ours
-            let advisory = GitHubToolAdvisoryResult(
-                tool: toolCall.function.name,
-                reason: "This repository tree query already succeeded earlier in this run.",
-                path_prefix: queryKey.pathPrefix,
-                suggested_next_step: "Reuse the earlier github_get_repo_tree result already in context, then continue with github_get_file_content, github_get_file_tail, or github_commit_file_changes."
-            )
-            Self.logger.notice("Suppressing redundant GitHub repo tree call for \(context.repositoryLabel) branch=\(context.branch) prefix=\(queryKey.pathPrefix ?? "/")")
-            return try? encodeToolResult(advisory)
-=======
             if let pathPrefix = queryKey.pathPrefix,
                gitHubExecutionState.emptyTreePathPrefixes.count >= 2,
                !gitHubExecutionState.didUsePathSearch {
@@ -1552,13 +1476,12 @@ final class ChatViewModel: ObservableObject {
                     path_prefix: pathPrefix,
                     suggested_next_step: "Stop guessing more missing folders. Use github_search_paths with the conceptual file name, then read the matched file directly."
                 )
-                Self.logger.notice("Redirecting repeated empty GitHub subtree scan for \(context.repositoryLabel, privacy: .public) branch=\(context.branch, privacy: .public) prefix=\(pathPrefix, privacy: .public)")
+                Self.logger.notice("Redirecting repeated empty GitHub subtree scan for \(context.repositoryLabel) branch=\(context.branch) prefix=\(pathPrefix)")
                 gitHubExecutionState.recordNoProgress(reason: "repo_tree_empty_redirect", logger: Self.logger)
                 return try? encodeToolResult(advisory)
             }
 
             return nil
->>>>>>> theirs
 
         case "github_get_file_content":
             guard let readKey = gitHubFileReadKey(
@@ -1585,10 +1508,7 @@ final class ChatViewModel: ObservableObject {
                 path: readKey.path,
                 suggested_next_step: suggestedNextStep
             )
-<<<<<<< ours
             Self.logger.notice("Suppressing redundant GitHub file read for \(context.repositoryLabel) branch=\(context.branch) path=\(readKey.path) truncated=\(priorRead.wasTruncated)")
-=======
-            Self.logger.notice("Suppressing redundant GitHub file read for \(context.repositoryLabel, privacy: .public) branch=\(context.branch, privacy: .public) path=\(readKey.path, privacy: .public) truncated=\(priorRead.wasTruncated, privacy: .public)")
             gitHubExecutionState.recordNoProgress(reason: "file_read_redundant", logger: Self.logger)
             return try? encodeToolResult(advisory)
 
@@ -1629,9 +1549,8 @@ final class ChatViewModel: ObservableObject {
             )
             gitHubExecutionState.incrementSearchAdvisoryCount(for: searchKey)
             let updatedObservation = gitHubExecutionState.searchObservations[searchKey] ?? observation
-            Self.logger.notice("Suppressing redundant GitHub search call for \(context.repositoryLabel, privacy: .public) branch=\(context.branch, privacy: .public) tool=\(toolCall.function.name, privacy: .public) query=\(searchKey.normalizedQuery, privacy: .public) repeats=\(updatedObservation.noProgressRepeatCount, privacy: .public) advisoryCount=\(updatedObservation.advisoryCount, privacy: .public)")
+            Self.logger.notice("Suppressing redundant GitHub search call for \(context.repositoryLabel) branch=\(context.branch) tool=\(toolCall.function.name) query=\(searchKey.normalizedQuery) repeats=\(updatedObservation.noProgressRepeatCount) advisoryCount=\(updatedObservation.advisoryCount)")
             gitHubExecutionState.recordNoProgress(reason: "search_redundant:\(searchKey.normalizedQuery)", logger: Self.logger)
->>>>>>> theirs
             return try? encodeToolResult(advisory)
 
         default:
@@ -2021,9 +1940,6 @@ final class ChatViewModel: ObservableObject {
         return ""
     }
 
-<<<<<<< ours
-    private func persistAssistantDraft(text: String, isPartial: Bool, finishReason: ChatFinishReason?, usage: TokenUsage? = nil) {
-=======
     private func printFullStreamedLLMOutput(
         _ draftText: String,
         finishReason: ChatFinishReason?,
@@ -2038,8 +1954,7 @@ final class ChatViewModel: ObservableObject {
         print("[LLM streamed output end]")
     }
 
-    private func persistAssistantDraft(text: String, isPartial: Bool, finishReason: ChatFinishReason?) {
->>>>>>> theirs
+    private func persistAssistantDraft(text: String, isPartial: Bool, finishReason: ChatFinishReason?, usage: TokenUsage? = nil) {
         let finalText = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !finalText.isEmpty else {
             streamingText = ""
