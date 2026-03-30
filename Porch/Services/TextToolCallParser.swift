@@ -65,11 +65,11 @@ enum TextToolCallParser {
 
     // MARK: - Private
 
-    private static func extractToolCalls<Output>(
+    private static func extractToolCalls(
         from text: String,
-        using pattern: some RegexComponent<Output>,
+        using pattern: some RegexComponent<(Substring, Substring)>,
         into toolCalls: inout [ParsedToolCall]
-    ) -> String where Output == (Substring, Substring) {
+    ) -> String {
         for match in text.matches(of: pattern) {
             let jsonString = String(match.output.1).trimmingCharacters(in: .whitespacesAndNewlines)
             if let parsed = parseToolCallJSON(jsonString) {

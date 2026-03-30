@@ -107,6 +107,42 @@ final class OpenAICompatibleClientTests: XCTestCase {
         ])
     }
 
+    func testStreamCompletionEncodesExplicitToolChoiceWhenRequested() async throws {
+        var requestDescriptor = makeDescriptor()
+        requestDescriptor.tools = [
+            ToolDefinition(
+                function: FunctionDefinitionBody(
+                    name: "sample_tool",
+                    description: "A sample tool.",
+                    parameters: .object([
+                        "type": .string("object"),
+                        "properties": .object([:])
+                    ])
+                )
+            )
+        ]
+        requestDescriptor.toolChoice = ChatCompletionToolChoice.none
+
+        MockURLProtocol.setRequestHandler { request in
+            let body = try self.decodeJSONBody(from: request)
+            XCTAssertEqual(body["tool_choice"] as? String, "none")
+            let tools = try XCTUnwrap(body["tools"] as? [[String: Any]])
+            XCTAssertEqual(tools.count, 1)
+
+            return .stream(bodyChunks: [
+                try self.makeSSEChunk(content: "No tools.", finishReason: nil),
+                try self.makeSSEChunk(content: nil, finishReason: "stop"),
+                Data("data: [DONE]\n".utf8)
+            ])
+        }
+
+        let events = try await collectEvents(from: await makeClient().streamCompletion(request: requestDescriptor))
+        XCTAssertEqual(events, [
+            .token("No tools."),
+            .completed(.stop)
+        ])
+    }
+
     func testStreamCompletionIgnoresCommentsBlankLinesAndNilDeltaContent() async throws {
         MockURLProtocol.setRequestHandler { _ in
             .stream(bodyChunks: [

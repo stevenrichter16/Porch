@@ -8,6 +8,13 @@ enum MessageBubbleID: Hashable, Sendable {
     case streaming
 }
 
+struct ToolActivityContext: Equatable {
+    let repositoryLabel: String?
+    let branch: String?
+    let statusLabel: String?
+    let isLiveActivity: Bool
+}
+
 struct MessageBubbleModel: Identifiable, Equatable {
     let id: MessageBubbleID
     let role: MessageRole
@@ -27,8 +34,16 @@ struct MessageBubbleModel: Identifiable, Equatable {
     let siblingCount: Int
     let siblingIndex: Int
     let imageData: Data?
+    let toolActivityContext: ToolActivityContext?
 
-    init(message: ChatMessage, isRegenerateEnabled: Bool, isEditEnabled: Bool, siblingCount: Int = 1, siblingIndex: Int = 0) {
+    init(
+        message: ChatMessage,
+        isRegenerateEnabled: Bool,
+        isEditEnabled: Bool,
+        siblingCount: Int = 1,
+        siblingIndex: Int = 0,
+        toolActivityContext: ToolActivityContext? = nil
+    ) {
         self.id = .persisted(message.id)
         self.role = message.role
         self.content = message.content
@@ -51,6 +66,7 @@ struct MessageBubbleModel: Identifiable, Equatable {
         self.siblingCount = siblingCount
         self.siblingIndex = siblingIndex
         self.imageData = message.imageData
+        self.toolActivityContext = toolActivityContext
     }
 
     init(
@@ -71,7 +87,8 @@ struct MessageBubbleModel: Identifiable, Equatable {
         tokenUsage: TokenUsage? = nil,
         siblingCount: Int = 1,
         siblingIndex: Int = 0,
-        imageData: Data? = nil
+        imageData: Data? = nil,
+        toolActivityContext: ToolActivityContext? = nil
     ) {
         self.id = id
         self.role = role
@@ -91,10 +108,11 @@ struct MessageBubbleModel: Identifiable, Equatable {
         self.siblingCount = siblingCount
         self.siblingIndex = siblingIndex
         self.imageData = imageData
+        self.toolActivityContext = toolActivityContext
     }
 
     var isToolCall: Bool {
-        toolCallName != nil && role == .assistant && finishReason == .toolCalls
+        toolCallName != nil && role == .assistant && (finishReason == .toolCalls || toolActivityContext?.isLiveActivity == true)
     }
 
     var isToolResult: Bool {
@@ -119,7 +137,11 @@ struct MessageBubble: View, Equatable {
                 toolName: model.toolCallName ?? "unknown",
                 arguments: model.toolCallArguments,
                 result: model.toolCallResult,
-                isToolResult: model.isToolResult
+                isToolResult: model.isToolResult,
+                repositoryLabel: model.toolActivityContext?.repositoryLabel,
+                branch: model.toolActivityContext?.branch,
+                statusLabel: model.toolActivityContext?.statusLabel,
+                isLiveActivity: model.toolActivityContext?.isLiveActivity == true
             )
         } else {
             VStack(alignment: .leading, spacing: 6) {

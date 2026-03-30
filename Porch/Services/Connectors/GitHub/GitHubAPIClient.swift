@@ -1,6 +1,8 @@
 import Foundation
+import OSLog
 
 actor GitHubAPIClient {
+    private static let logger = Logger(subsystem: "steven.Porch", category: "GitHubAPIClient")
     private let session: URLSession
     private let decoder: JSONDecoder
     private let encoder: JSONEncoder
@@ -76,6 +78,57 @@ actor GitHubAPIClient {
 
     func getPullRequest(owner: String, repo: String, number: Int) async throws -> GitHubPullRequest {
         let url = baseURL.appending(path: "repos/\(owner)/\(repo)/pulls/\(number)")
+        return try await perform(url: url)
+    }
+
+    func listPullRequestFiles(owner: String, repo: String, number: Int, perPage: Int = 100) async throws -> [GitHubPullRequestFile] {
+        var components = URLComponents(
+            url: baseURL.appending(path: "repos/\(owner)/\(repo)/pulls/\(number)/files"),
+            resolvingAgainstBaseURL: false
+        )!
+        components.queryItems = [
+            URLQueryItem(name: "per_page", value: "\(min(perPage, 100))")
+        ]
+        return try await perform(url: components.url!)
+    }
+
+    func getPullRequestDiff(owner: String, repo: String, number: Int) async throws -> String {
+        let url = baseURL.appending(path: "repos/\(owner)/\(repo)/pulls/\(number)")
+        return try await performString(url: url, accept: "application/vnd.github.v3.diff")
+    }
+
+    func searchIssues(owner: String, repo: String, query: String, includePullRequests: Bool, perPage: Int = 10) async throws -> GitHubSearchIssuesResponse {
+        let qualifier = includePullRequests ? "is:pr" : "is:issue"
+        let combinedQuery = "repo:\(owner)/\(repo) \(qualifier) \(query)"
+        var components = URLComponents(url: baseURL.appending(path: "search/issues"), resolvingAgainstBaseURL: false)!
+        components.queryItems = [
+            URLQueryItem(name: "q", value: combinedQuery),
+            URLQueryItem(name: "per_page", value: "\(min(perPage, 30))")
+        ]
+        return try await perform(url: components.url!)
+    }
+
+    // MARK: - Commits / Compare
+
+    func listCommits(owner: String, repo: String, sha: String? = nil, perPage: Int = 10) async throws -> [GitHubCommitSummary] {
+        var components = URLComponents(
+            url: baseURL.appending(path: "repos/\(owner)/\(repo)/commits"),
+            resolvingAgainstBaseURL: false
+        )!
+        var queryItems = [
+            URLQueryItem(name: "per_page", value: "\(min(perPage, 30))")
+        ]
+        if let sha, !sha.isEmpty {
+            queryItems.append(URLQueryItem(name: "sha", value: sha))
+        }
+        components.queryItems = queryItems
+        return try await perform(url: components.url!)
+    }
+
+    func compareRefs(owner: String, repo: String, base: String, head: String) async throws -> GitHubCompareResponse {
+        let encodedBase = base.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? base
+        let encodedHead = head.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? head
+        let url = baseURL.appending(path: "repos/\(owner)/\(repo)/compare/\(encodedBase)...\(encodedHead)")
         return try await perform(url: url)
     }
 
@@ -176,9 +229,13 @@ actor GitHubAPIClient {
 
     private func perform<T: Decodable>(url: URL) async throws -> T {
         let request = makeRequest(url: url, method: "GET")
-        let (data, response) = try await session.data(for: request)
-        try validate(response: response, data: data)
-        return try decoder.decode(T.self, from: data)
+        let (data, _) = try await performRequest(request, requestBodyBytes: nil)
+        do {
+            return try decoder.decode(T.self, from: data)
+        } catch {
+            Self.logger.error("GitHub decode failed for GET \(Self.loggablePathAndQuery(from: url), privacy: .public): \(error.localizedDescription, privacy: .public)")
+            throw error
+        }
     }
 
     private func perform<Body: Encodable, T: Decodable>(url: URL, method: String, body: Body) async throws -> T {
@@ -187,9 +244,48 @@ actor GitHubAPIClient {
         request.httpBody = requestBody
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
-        let (data, response) = try await session.data(for: request)
-        try validate(response: response, data: data)
-        return try decoder.decode(T.self, from: data)
+        let (data, _) = try await performRequest(request, requestBodyBytes: requestBody.count)
+        do {
+            return try decoder.decode(T.self, from: data)
+        } catch {
+            Self.logger.error("GitHub decode failed for \(method, privacy: .public) \(Self.loggablePathAndQuery(from: url), privacy: .public): \(error.localizedDescription, privacy: .public)")
+            throw error
+        }
+    }
+
+    private func performString(url: URL, accept: String) async throws -> String {
+        var request = makeRequest(url: url, method: "GET")
+        request.setValue(accept, forHTTPHeaderField: "Accept")
+        let (data, _) = try await performRequest(request, requestBodyBytes: nil)
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    private func performRequest(
+        _ request: URLRequest,
+        requestBodyBytes: Int?
+    ) async throws -> (Data, HTTPURLResponse) {
+        let startedAt = Date()
+
+        do {
+            let (data, response) = try await session.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse else {
+                Self.logger.error("GitHub API \(request.httpMethod ?? "GET", privacy: .public) \(Self.loggablePathAndQuery(from: request.url), privacy: .public) returned a non-HTTP response after \(Self.elapsedMilliseconds(since: startedAt), privacy: .public)ms")
+                throw GitHubAPIError.invalidResponse
+            }
+
+            do {
+                try validate(response: httpResponse, data: data)
+            } catch {
+                Self.logger.error("GitHub API \(request.httpMethod ?? "GET", privacy: .public) \(Self.loggablePathAndQuery(from: request.url), privacy: .public) failed status=\(httpResponse.statusCode, privacy: .public) bytes=\(data.count, privacy: .public) requestBytes=\(requestBodyBytes ?? 0, privacy: .public) elapsedMs=\(Self.elapsedMilliseconds(since: startedAt), privacy: .public): \(error.localizedDescription, privacy: .public)")
+                throw error
+            }
+
+            Self.logger.debug("GitHub API \(request.httpMethod ?? "GET", privacy: .public) \(Self.loggablePathAndQuery(from: request.url), privacy: .public) status=\(httpResponse.statusCode, privacy: .public) bytes=\(data.count, privacy: .public) requestBytes=\(requestBodyBytes ?? 0, privacy: .public) elapsedMs=\(Self.elapsedMilliseconds(since: startedAt), privacy: .public)")
+            return (data, httpResponse)
+        } catch {
+            Self.logger.error("GitHub API \(request.httpMethod ?? "GET", privacy: .public) \(Self.loggablePathAndQuery(from: request.url), privacy: .public) transport error after \(Self.elapsedMilliseconds(since: startedAt), privacy: .public)ms: \(error.localizedDescription, privacy: .public)")
+            throw error
+        }
     }
 
     private func makeRequest(url: URL, method: String) -> URLRequest {
@@ -202,14 +298,25 @@ actor GitHubAPIClient {
         return request
     }
 
-    private func validate(response: URLResponse, data: Data) throws {
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw GitHubAPIError.invalidResponse
-        }
-
-        guard (200...299).contains(httpResponse.statusCode) else {
+    private func validate(response: HTTPURLResponse, data: Data) throws {
+        guard (200...299).contains(response.statusCode) else {
             let body = String(data: data, encoding: .utf8) ?? ""
-            throw GitHubAPIError.httpStatus(httpResponse.statusCode, body)
+            throw GitHubAPIError.httpStatus(response.statusCode, body)
         }
+    }
+
+    private static func loggablePathAndQuery(from url: URL?) -> String {
+        guard let url else { return "<nil-url>" }
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return url.path
+        }
+        if let query = components.percentEncodedQuery, !query.isEmpty {
+            return "\(components.path)?\(query)"
+        }
+        return components.path
+    }
+
+    private static func elapsedMilliseconds(since startedAt: Date) -> Int {
+        Int(Date().timeIntervalSince(startedAt) * 1_000)
     }
 }

@@ -14,6 +14,8 @@ struct InputBar: View {
     @State private var isShowingOverrideSheet = false
     @State private var selectedPhotoItems: [PhotosPickerItem] = []
     @State private var isLoadingPhotos = false
+    @State private var isShowingPromptSuggestions = false
+    @State private var promptSuggestionQuery = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -38,6 +40,9 @@ struct InputBar: View {
                 await loadSelectedPhotos(newItems)
                 isLoadingPhotos = false
             }
+        }
+        .sheet(isPresented: $isShowingPromptSuggestions, onDismiss: clearPromptSuggestionQuery) {
+            promptSuggestionSheet
         }
     }
 
@@ -81,6 +86,7 @@ struct InputBar: View {
                 attachmentButton
             }
             composerTextField
+            composerPromptSuggestionButton
             composerTuneButton
             composerSendButton
         }
@@ -194,6 +200,22 @@ struct InputBar: View {
         isShowingOverrideSheet = true
     }
 
+    private func openPromptSuggestions() {
+        isShowingPromptSuggestions = true
+    }
+
+    private func selectPromptSuggestion(_ prompt: String) {
+        text = prompt
+        isShowingPromptSuggestions = false
+        DispatchQueue.main.async {
+            isFocused = true
+        }
+    }
+
+    private func clearPromptSuggestionQuery() {
+        promptSuggestionQuery = ""
+    }
+
     private var composerTextField: some View {
         TextField("Message...", text: $text, axis: .vertical)
             .focused($isFocused)
@@ -209,6 +231,23 @@ struct InputBar: View {
             isActive: !overrideChips.isEmpty,
             action: openOverrideSheet
         )
+    }
+
+    private var composerPromptSuggestionButton: some View {
+        Button(action: openPromptSuggestions) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .fill(PorchTheme.inputFieldBackground)
+
+                Image(systemName: "text.bubble")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .frame(width: 34, height: 34)
+        }
+        .buttonStyle(.plain)
+        .disabled(isStreaming)
+        .accessibilityLabel("Open project prompt suggestions")
     }
 
     private var composerSendButton: some View {
@@ -227,6 +266,203 @@ struct InputBar: View {
 
         return openOverrideSheet
     }
+
+    @ViewBuilder
+    private var promptSuggestionSheet: some View {
+        NavigationStack {
+            List {
+                ForEach(filteredPromptSuggestionSections) { section in
+                    Section(section.title) {
+                        ForEach(section.prompts) { prompt in
+                            Button {
+                                selectPromptSuggestion(prompt.prompt)
+                            } label: {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text(prompt.title)
+                                        .font(.subheadline.weight(.semibold))
+                                        .foregroundStyle(.primary)
+                                    Text(prompt.prompt)
+                                        .font(.footnote)
+                                        .foregroundStyle(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.vertical, 4)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+            .searchable(text: $promptSuggestionQuery, prompt: "Search Porch prompts")
+            .navigationTitle("Project Prompts")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Close") {
+                        isShowingPromptSuggestions = false
+                    }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+
+    private var filteredPromptSuggestionSections: [PromptSuggestionSection] {
+        let query = promptSuggestionQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else {
+            return promptSuggestionSections
+        }
+
+        let normalizedQuery = query.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+        return promptSuggestionSections.compactMap { section in
+            let prompts = section.prompts.filter { prompt in
+                let haystack = [prompt.title, prompt.prompt]
+                    .joined(separator: " ")
+                    .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+                return haystack.contains(normalizedQuery)
+            }
+            guard !prompts.isEmpty else { return nil }
+            return PromptSuggestionSection(id: section.id, title: section.title, prompts: prompts)
+        }
+    }
+
+    private var promptSuggestionSections: [PromptSuggestionSection] {
+        [
+            PromptSuggestionSection(
+                title: "Refactor",
+                prompts: [
+                    PromptSuggestion(
+                        title: "Refactor Timestamp Formatter",
+                        prompt: "Do a small refactoring of the message timestamp formatter"
+                    ),
+                    PromptSuggestion(
+                        title: "Refactor Chat Title Generator",
+                        prompt: "Do a small refactoring of the ChatTitleGenerator"
+                    ),
+                    PromptSuggestion(
+                        title: "Refactor Input Bar",
+                        prompt: "Do a small refactoring of the InputBar composer layout"
+                    ),
+                    PromptSuggestion(
+                        title: "Refactor GitHub Prompt Guidance",
+                        prompt: "Do a small refactoring of the GitHub prompt guidance in ChatViewModel"
+                    )
+                ]
+            ),
+            PromptSuggestionSection(
+                title: "Explain Code",
+                prompts: [
+                    PromptSuggestion(
+                        title: "Explain Chat Titles",
+                        prompt: "Find the file that formats chat titles and explain it"
+                    ),
+                    PromptSuggestion(
+                        title: "Explain Timestamp Formatting",
+                        prompt: "Find the file that formats chat timestamps and explain how it works"
+                    ),
+                    PromptSuggestion(
+                        title: "Explain Send/Stop Flow",
+                        prompt: "Find where the chat composer is implemented and explain how send and stop work"
+                    ),
+                    PromptSuggestion(
+                        title: "Explain Redundant Tool Suppression",
+                        prompt: "Explain how ChatViewModel suppresses redundant GitHub tool calls"
+                    ),
+                    PromptSuggestion(
+                        title: "Explain Tool Bubble Labels",
+                        prompt: "Find the file that renders tool call bubbles and explain how GitHub tools are labeled"
+                    )
+                ]
+            ),
+            PromptSuggestionSection(
+                title: "Targeted Reads",
+                prompts: [
+                    PromptSuggestion(
+                        title: "Tail of GitHub Context VM",
+                        prompt: "Show me the last 40 lines of the GitHub context selection view model"
+                    ),
+                    PromptSuggestion(
+                        title: "InputBar Long Press Lines",
+                        prompt: "Show me the lines in InputBar.swift that handle long-press on the send button"
+                    ),
+                    PromptSuggestion(
+                        title: "GitHub Repo Tree Tool",
+                        prompt: "Show me the lines around the GitHub repo tree tool implementation"
+                    ),
+                    PromptSuggestion(
+                        title: "Connector Helper Tail",
+                        prompt: "Show me the last 60 lines of GitHubConnector.swift around the helper methods"
+                    )
+                ]
+            ),
+            PromptSuggestionSection(
+                title: "GitHub Workflows",
+                prompts: [
+                    PromptSuggestion(
+                        title: "Compare Branches",
+                        prompt: "Compare main to <some branch>"
+                    ),
+                    PromptSuggestion(
+                        title: "Search GitHub Context Issues",
+                        prompt: "Search issues for GitHub context"
+                    ),
+                    PromptSuggestion(
+                        title: "Search Web Search Issues",
+                        prompt: "Search issues for web search connector"
+                    ),
+                    PromptSuggestion(
+                        title: "Review Pull Request",
+                        prompt: "Review pull request #<n> and summarize the changed files"
+                    ),
+                    PromptSuggestion(
+                        title: "Summarize Logging Hot Paths",
+                        prompt: "Review the GitHub connector logging hot paths and summarize what is timed"
+                    )
+                ]
+            ),
+            PromptSuggestionSection(
+                title: "Project Exploration",
+                prompts: [
+                    PromptSuggestion(
+                        title: "Apply GitHub Context",
+                        prompt: "Find the code that applies GitHub context to a chat and explain it"
+                    ),
+                    PromptSuggestion(
+                        title: "Generation Override Flow",
+                        prompt: "Search the project for generation parameter overrides and summarize the flow"
+                    ),
+                    PromptSuggestion(
+                        title: "Web Search Tool Exposure",
+                        prompt: "Find where web search tools are exposed and explain how they enter the tool loop"
+                    ),
+                    PromptSuggestion(
+                        title: "Find GitHub Connector State",
+                        prompt: "Find the files that hold GitHub connector state and summarize how they interact"
+                    )
+                ]
+            )
+        ]
+    }
+}
+
+private struct PromptSuggestionSection: Identifiable {
+    let id: String
+    let title: String
+    let prompts: [PromptSuggestion]
+
+    init(id: String? = nil, title: String, prompts: [PromptSuggestion]) {
+        self.id = id ?? title
+        self.title = title
+        self.prompts = prompts
+    }
+}
+
+private struct PromptSuggestion: Identifiable {
+    let title: String
+    let prompt: String
+
+    var id: String { prompt }
 }
 
 private enum ComposerActionButtonStyle {
