@@ -81,7 +81,7 @@ struct ChatDetailView: View {
                             .lineLimit(1)
                             .truncationMode(.middle)
                         if let usage = viewModel.lastTokenUsage {
-                            Text("\(usage.formattedTotal)")
+                            Label("\(usage.formattedTotal) tok", systemImage: "number")
                                 .font(.system(.caption2, design: .monospaced))
                                 .foregroundStyle(PorchTheme.accent)
                         }

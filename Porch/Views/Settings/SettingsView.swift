@@ -110,8 +110,15 @@ struct SettingsView: View {
                         settings.markUpdated()
                     }
                 )) {
-                    Label("Memory", systemImage: "brain")
+                    VStack(alignment: .leading, spacing: 2) {
+                        Label("Memory", systemImage: "brain")
+                        Text("Remember facts across conversations")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
                 }
+
+                MCPSettingsView(settings: settings)
 
                 Picker(selection: Binding(
                     get: { settings.toolCallingMode },
@@ -133,8 +140,6 @@ struct SettingsView: View {
                     Label("Tool Calling", systemImage: "wrench.and.screwdriver")
                 }
             }
-
-            MCPSettingsView(settings: settings)
 
             Section("Generation") {
                 GenerationParametersTemperatureControl(parameters: parametersBinding)

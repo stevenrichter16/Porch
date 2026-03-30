@@ -125,15 +125,24 @@ struct MessageBubble: View, Equatable {
             VStack(alignment: .leading, spacing: 6) {
                 headerRow
 
-                if model.isModelThinking {
+                if model.isModelThinking, model.thinkingContent?.isEmpty ?? true {
                     ThinkingIndicator()
                 }
 
                 if let thinking = model.thinkingContent, !thinking.isEmpty {
-                    ThinkingDisclosure(content: thinking)
+                    ThinkingDisclosure(content: thinking, isStreaming: model.isStreaming)
                 }
 
                 messageContent
+
+                if model.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                   model.thinkingContent != nil,
+                   !model.isStreaming {
+                    Text("No visible response — only reasoning was produced.")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .italic()
+                }
 
                 if model.isPartial || model.finishReason == .cancelled {
                     statusCapsule(text: "Partial")
@@ -163,7 +172,7 @@ struct MessageBubble: View, Equatable {
                 }
             }
 
-            MessageCopyButton(content: model.content)
+            MessageCopyButton(content: model.content.isEmpty ? (model.thinkingContent ?? "") : model.content)
         }
     }
 
@@ -363,7 +372,14 @@ private struct ThinkingIndicator: View {
 
 struct ThinkingDisclosure: View {
     let content: String
-    @State private var isExpanded = false
+    let isStreaming: Bool
+    @State private var isExpanded: Bool
+
+    init(content: String, isStreaming: Bool = false) {
+        self.content = content
+        self.isStreaming = isStreaming
+        self._isExpanded = State(initialValue: isStreaming)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {

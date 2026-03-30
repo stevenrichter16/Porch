@@ -3,14 +3,15 @@ import SwiftUI
 struct MCPSettingsView: View {
     @Bindable var settings: AppSettings
     @State private var isAddingServer = false
+    @State private var showInvalidURLError = false
     @State private var newName = ""
     @State private var newURL = ""
     @State private var newAuthHeader = ""
 
     var body: some View {
-        Section("MCP Servers") {
+        DisclosureGroup("MCP Servers") {
             if settings.mcpServerConfigs.isEmpty {
-                Text("No MCP servers configured. Add a server to extend tool capabilities.")
+                Text("No MCP servers configured.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -53,7 +54,11 @@ struct MCPSettingsView: View {
             Button("Add") {
                 let trimmedURL = newURL.trimmingCharacters(in: .whitespacesAndNewlines)
                 let trimmedName = newName.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !trimmedURL.isEmpty, URL(string: trimmedURL) != nil else { return }
+                guard !trimmedURL.isEmpty else { return }
+            guard URL(string: trimmedURL) != nil else {
+                showInvalidURLError = true
+                return
+            }
 
                 let config = MCPServerConfig(
                     name: trimmedName.isEmpty ? "MCP Server" : trimmedName,
@@ -67,6 +72,11 @@ struct MCPSettingsView: View {
             }
 
             Button("Cancel", role: .cancel) {}
+        }
+        .alert("Invalid URL", isPresented: $showInvalidURLError) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Enter a valid server URL (e.g. http://localhost:3000/mcp).")
         }
     }
 

@@ -77,7 +77,7 @@ struct InputBar: View {
 
     private var composerRow: some View {
         HStack(alignment: .bottom, spacing: 8) {
-            if pendingImages != nil {
+            if pendingImages != nil, !isStreaming {
                 attachmentButton
             }
             composerTextField
@@ -112,6 +112,15 @@ struct InputBar: View {
                                 .aspectRatio(contentMode: .fill)
                                 .frame(width: 56, height: 56)
                                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        } else {
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(PorchTheme.inputFieldBackground)
+                                .frame(width: 56, height: 56)
+                                .overlay {
+                                    Image(systemName: "photo")
+                                        .font(.title3)
+                                        .foregroundStyle(.secondary)
+                                }
                         }
 
                         Button {
@@ -140,7 +149,7 @@ struct InputBar: View {
                 #endif
                 let attachment = ImageAttachment(
                     imageData: data,
-                    mimeType: "image/jpeg",
+                    mimeType: Self.detectMimeType(from: data),
                     thumbnail: thumbnail
                 )
                 newAttachments.append(attachment)
@@ -148,6 +157,15 @@ struct InputBar: View {
         }
         pendingImages?.wrappedValue = newAttachments
         selectedPhotoItems = []
+    }
+
+    private static func detectMimeType(from data: Data) -> String {
+        guard data.count >= 4 else { return "image/jpeg" }
+        let header = [UInt8](data.prefix(4))
+        if header.starts(with: [0x89, 0x50, 0x4E, 0x47]) { return "image/png" }
+        if header.starts(with: [0x47, 0x49, 0x46]) { return "image/gif" }
+        if header.starts(with: [0x52, 0x49, 0x46, 0x46]) { return "image/webp" }
+        return "image/jpeg"
     }
 
     @ViewBuilder
