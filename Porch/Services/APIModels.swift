@@ -81,9 +81,29 @@ struct StreamingFunctionDelta: Decodable {
 
 // MARK: - Chat Messages
 
+/// Content part for multimodal messages (text + images).
+struct ContentPart: Codable, Equatable {
+    var type: String
+    var text: String?
+    var image_url: ImageURL?
+
+    struct ImageURL: Codable, Equatable {
+        var url: String
+    }
+
+    static func text(_ text: String) -> ContentPart {
+        ContentPart(type: "text", text: text)
+    }
+
+    static func imageURL(_ dataURL: String) -> ContentPart {
+        ContentPart(type: "image_url", image_url: ImageURL(url: dataURL))
+    }
+}
+
 struct OpenAIChatMessage: Codable, Equatable {
     var role: String
     var content: String?
+    var contentParts: [ContentPart]?
     var tool_calls: [ToolCall]?
     var tool_call_id: String?
     var name: String?
@@ -91,6 +111,11 @@ struct OpenAIChatMessage: Codable, Equatable {
     init(role: String, content: String?) {
         self.role = role
         self.content = content
+    }
+
+    init(role: String, contentParts: [ContentPart]) {
+        self.role = role
+        self.contentParts = contentParts
     }
 
     init(role: String, content: String?, toolCalls: [ToolCall]) {
@@ -104,6 +129,50 @@ struct OpenAIChatMessage: Codable, Equatable {
         self.content = content
         self.tool_call_id = toolCallID
         self.name = name
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case role, content, tool_calls, tool_call_id, name
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(role, forKey: .role)
+
+        if let parts = contentParts {
+            // Encode content as array of parts for vision API
+            try container.encode(parts, forKey: .content)
+        } else {
+            try container.encodeIfPresent(content, forKey: .content)
+        }
+
+        try container.encodeIfPresent(tool_calls, forKey: .tool_calls)
+        try container.encodeIfPresent(tool_call_id, forKey: .tool_call_id)
+        try container.encodeIfPresent(name, forKey: .name)
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        role = try container.decode(String.self, forKey: .role)
+
+        // content can be either a plain string or an array of ContentParts (vision API)
+        if let parts = try? container.decode([ContentPart].self, forKey: .content) {
+            contentParts = parts
+            content = parts.compactMap(\.text).joined()
+        } else {
+            content = try container.decodeIfPresent(String.self, forKey: .content)
+            contentParts = nil
+        }
+
+        tool_calls = try container.decodeIfPresent([ToolCall].self, forKey: .tool_calls)
+        tool_call_id = try container.decodeIfPresent(String.self, forKey: .tool_call_id)
+        name = try container.decodeIfPresent(String.self, forKey: .name)
+    }
+
+    static func == (lhs: OpenAIChatMessage, rhs: OpenAIChatMessage) -> Bool {
+        lhs.role == rhs.role && lhs.content == rhs.content && lhs.tool_calls == rhs.tool_calls
+        && lhs.tool_call_id == rhs.tool_call_id && lhs.name == rhs.name
+        && lhs.contentParts == rhs.contentParts
     }
 }
 
@@ -181,6 +250,19 @@ struct ModelsResponseBody: Decodable {
     var data: [ModelObject]
 }
 
+struct APIUsage: Decodable {
+    var prompt_tokens: Int?
+    var completion_tokens: Int?
+    var total_tokens: Int?
+
+    var asTokenUsage: TokenUsage? {
+        guard let prompt = prompt_tokens, let completion = completion_tokens else {
+            return nil
+        }
+        return TokenUsage(promptTokens: prompt, completionTokens: completion)
+    }
+}
+
 struct ChatCompletionChunk: Decodable {
     struct Choice: Decodable {
         struct Delta: Decodable {
@@ -195,6 +277,7 @@ struct ChatCompletionChunk: Decodable {
     }
 
     var choices: [Choice]
+    var usage: APIUsage?
 }
 
 struct ChatCompletionResponseBody: Decodable {
@@ -211,10 +294,12 @@ struct ChatCompletionResponseBody: Decodable {
     }
 
     var choices: [Choice]
+    var usage: APIUsage?
 }
 
 struct NonStreamingCompletionResult {
     var content: String?
     var toolCalls: [ToolCall]?
     var finishReason: ChatFinishReason?
+    var usage: TokenUsage?
 }

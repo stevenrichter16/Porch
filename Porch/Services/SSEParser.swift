@@ -1,5 +1,4 @@
 import Foundation
-import os
 
 enum SSELineParseResult {
     case chunk(ChatCompletionChunk)
@@ -8,7 +7,7 @@ enum SSELineParseResult {
 }
 
 struct SSEParser {
-    private static let logger = Logger(subsystem: "com.porch.app", category: "SSEParser")
+    private static let logger = PorchLogger(category: "SSEParser")
     private let decoder = JSONDecoder()
 
     func parse(line: String) throws -> SSELineParseResult {
@@ -35,7 +34,7 @@ struct SSEParser {
         do {
             return .chunk(try decoder.decode(ChatCompletionChunk.self, from: data))
         } catch {
-            Self.logger.debug("[chunk] malformed error=\(error.localizedDescription, privacy: .public) payload=\(payload.prefix(200), privacy: .public)")
+            Self.logger.debug("[chunk] malformed error=\(error.localizedDescription) payload=\(payload.prefix(200))")
             return .ignore
         }
     }

@@ -1,5 +1,4 @@
 import Foundation
-import OSLog
 
 final class GitHubConnector: Connector, @unchecked Sendable {
     private enum GitHubWriteArgumentsMode: Equatable {
@@ -29,7 +28,7 @@ final class GitHubConnector: Connector, @unchecked Sendable {
     private static let maxDiffPreviewCharacters = 12_000
     private static let maxReturnedFileContentCharacters = 12_000
     private static let maxCodeSearchCandidateFiles = 40
-    private static let logger = Logger(subsystem: "steven.Porch", category: "GitHubConnector")
+    private static let logger = PorchLogger(category: "GitHubConnector")
 
     private let keychain: KeychainStoreProtocol
     private let keychainAccount = "github-pat"
@@ -332,8 +331,8 @@ final class GitHubConnector: Connector, @unchecked Sendable {
                 from: argsData,
                 example: gitHubWriteArgumentsExample(for: .freeform)
             )
-            Self.logger.notice("Preparing freeform GitHub write request for \(args.owner, privacy: .public)/\(args.repo, privacy: .public) requestedBase=\(args.base_ref ?? "<auto>", privacy: .public) requestedBranch=\(args.branch_name ?? "<auto>", privacy: .public) changeCount=\(args.changes.count, privacy: .public)")
-            Self.logger.debug("GitHub write changes: \(self.summarizeChanges(args.changes), privacy: .public)")
+            Self.logger.notice("Preparing freeform GitHub write request for \(args.owner)/\(args.repo) requestedBase=\(args.base_ref ?? "<auto>") requestedBranch=\(args.branch_name ?? "<auto>") changeCount=\(args.changes.count)")
+            Self.logger.debug("GitHub write changes: \(self.summarizeChanges(args.changes))")
             return try await prepareWriteRequest(
                 owner: args.owner,
                 repo: args.repo,
@@ -343,7 +342,7 @@ final class GitHubConnector: Connector, @unchecked Sendable {
                 changes: args.changes
             )
         } catch {
-            Self.logger.error("Failed to prepare freeform GitHub write request: \(error.localizedDescription, privacy: .public)")
+            Self.logger.error("Failed to prepare freeform GitHub write request: \(error.localizedDescription)")
             throw error
         }
     }
@@ -370,8 +369,8 @@ final class GitHubConnector: Connector, @unchecked Sendable {
                 from: argsData,
                 example: gitHubWriteArgumentsExample(for: .selectedContext)
             )
-            Self.logger.notice("Preparing context-bound GitHub write request for \(context.repositoryLabel, privacy: .public) base=\(context.branch, privacy: .public) requestedBranch=\(args.branch_name ?? "<auto>", privacy: .public) changeCount=\(args.changes.count, privacy: .public)")
-            Self.logger.debug("GitHub write changes: \(self.summarizeChanges(args.changes), privacy: .public)")
+            Self.logger.notice("Preparing context-bound GitHub write request for \(context.repositoryLabel) base=\(context.branch) requestedBranch=\(args.branch_name ?? "<auto>") changeCount=\(args.changes.count)")
+            Self.logger.debug("GitHub write changes: \(self.summarizeChanges(args.changes))")
             return try await prepareWriteRequest(
                 owner: context.owner,
                 repo: context.repo,
@@ -381,7 +380,7 @@ final class GitHubConnector: Connector, @unchecked Sendable {
                 changes: args.changes
             )
         } catch {
-            Self.logger.error("Failed to prepare context-bound GitHub write request for \(context.repositoryLabel, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            Self.logger.error("Failed to prepare context-bound GitHub write request for \(context.repositoryLabel): \(error.localizedDescription)")
             throw error
         }
     }
@@ -403,7 +402,7 @@ final class GitHubConnector: Connector, @unchecked Sendable {
                 throw ConnectorError.invalidArguments("Commit message cannot be empty.")
             }
 
-            Self.logger.notice("Executing approved GitHub write for \(request.repositoryFullName, privacy: .public) base=\(request.resolvedBaseRef, privacy: .public) branch=\(normalizedBranchName, privacy: .public) changeCount=\(request.changes.count, privacy: .public)")
+            Self.logger.notice("Executing approved GitHub write for \(request.repositoryFullName) base=\(request.resolvedBaseRef) branch=\(normalizedBranchName) changeCount=\(request.changes.count)")
 
             let client = GitHubAPIClient(token: token, session: session)
             try await ensureBranchDoesNotExist(
@@ -425,11 +424,11 @@ final class GitHubConnector: Connector, @unchecked Sendable {
                         repo: request.repo,
                         content: change.content ?? ""
                     )
-                    Self.logger.debug("Created blob for \(change.operation.rawValue, privacy: .public):\(change.path, privacy: .public) sha=\(self.shortSHA(blob.sha), privacy: .public)")
+                    Self.logger.debug("Created blob for \(change.operation.rawValue):\(change.path) sha=\(self.shortSHA(blob.sha))")
                     treeEntries.append(GitHubCreateTreeRequest.Entry(path: change.path, sha: blob.sha))
 
                 case .delete:
-                    Self.logger.debug("Prepared delete entry for \(change.path, privacy: .public)")
+                    Self.logger.debug("Prepared delete entry for \(change.path)")
                     treeEntries.append(
                         GitHubCreateTreeRequest.Entry(path: change.path, sha: nil, isDelete: true)
                     )
@@ -463,7 +462,7 @@ final class GitHubConnector: Connector, @unchecked Sendable {
             let updatedCount = request.changes.filter { $0.operation == .update }.count
             let deletedCount = request.changes.filter { $0.operation == .delete }.count
 
-            Self.logger.notice("GitHub write succeeded for \(request.repositoryFullName, privacy: .public) branch=\(normalizedBranchName, privacy: .public) commit=\(self.shortSHA(createdCommit.sha), privacy: .public) created=\(createdCount, privacy: .public) updated=\(updatedCount, privacy: .public) deleted=\(deletedCount, privacy: .public) branchCheckMs=\(self.elapsedMilliseconds(since: startedAt, until: afterBranchCheck), privacy: .public) blobMs=\(self.elapsedMilliseconds(since: afterBranchCheck, until: afterBlobPhase), privacy: .public) treeMs=\(self.elapsedMilliseconds(since: afterBlobPhase, until: afterTreeCreate), privacy: .public) commitMs=\(self.elapsedMilliseconds(since: afterTreeCreate, until: afterCommitCreate), privacy: .public) refMs=\(self.elapsedMilliseconds(since: afterCommitCreate, until: afterRefCreate), privacy: .public) totalMs=\(self.elapsedMilliseconds(since: startedAt), privacy: .public)")
+            Self.logger.notice("GitHub write succeeded for \(request.repositoryFullName) branch=\(normalizedBranchName) commit=\(self.shortSHA(createdCommit.sha)) created=\(createdCount) updated=\(updatedCount) deleted=\(deletedCount) branchCheckMs=\(self.elapsedMilliseconds(since: startedAt, until: afterBranchCheck)) blobMs=\(self.elapsedMilliseconds(since: afterBranchCheck, until: afterBlobPhase)) treeMs=\(self.elapsedMilliseconds(since: afterBlobPhase, until: afterTreeCreate)) commitMs=\(self.elapsedMilliseconds(since: afterTreeCreate, until: afterCommitCreate)) refMs=\(self.elapsedMilliseconds(since: afterCommitCreate, until: afterRefCreate)) totalMs=\(self.elapsedMilliseconds(since: startedAt))")
 
             return GitHubWriteResult(
                 status: "success",
@@ -482,7 +481,7 @@ final class GitHubConnector: Connector, @unchecked Sendable {
                 deleted_count: deletedCount
             )
         } catch {
-            Self.logger.error("GitHub write execution failed for \(request.repositoryFullName, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            Self.logger.error("GitHub write execution failed for \(request.repositoryFullName): \(error.localizedDescription)")
             throw error
         }
     }
@@ -580,7 +579,7 @@ final class GitHubConnector: Connector, @unchecked Sendable {
             total_matching_count: rerankedEntries.count,
             results: matches
         )
-        Self.logger.debug("Searched GitHub paths for \(repositoryFullName, privacy: .public) branch=\(ref, privacy: .public) query=\(query, privacy: .public) indexedEntries=\(snapshot.treeEntries.count, privacy: .public) returned=\(matches.count, privacy: .public) totalMatches=\(rerankedEntries.count, privacy: .public) elapsedMs=\(self.elapsedMilliseconds(since: startedAt), privacy: .public)")
+        Self.logger.debug("Searched GitHub paths for \(repositoryFullName) branch=\(ref) query=\(query) indexedEntries=\(snapshot.treeEntries.count) returned=\(matches.count) totalMatches=\(rerankedEntries.count) elapsedMs=\(self.elapsedMilliseconds(since: startedAt))")
         return ExecutionResult(
             output: try encodeResult(result),
             validatedRepository: snapshot
@@ -688,7 +687,7 @@ final class GitHubConnector: Connector, @unchecked Sendable {
             searched_files: searchedFiles,
             results: preferredMatches
         )
-        Self.logger.debug("Searched GitHub code for \(repositoryFullName, privacy: .public) branch=\(ref, privacy: .public) query=\(query, privacy: .public) candidateFiles=\(rerankedCandidateEntries.count, privacy: .public) scannedCandidates=\(limitedCandidates.count, privacy: .public) searchedFiles=\(searchedFiles, privacy: .public) returned=\(preferredMatches.count, privacy: .public) validationCalls=1 elapsedMs=\(self.elapsedMilliseconds(since: startedAt), privacy: .public)")
+        Self.logger.debug("Searched GitHub code for \(repositoryFullName) branch=\(ref) query=\(query) candidateFiles=\(rerankedCandidateEntries.count) scannedCandidates=\(limitedCandidates.count) searchedFiles=\(searchedFiles) returned=\(preferredMatches.count) validationCalls=1 elapsedMs=\(self.elapsedMilliseconds(since: startedAt))")
         return ExecutionResult(
             output: try encodeResult(result),
             validatedRepository: repository
@@ -699,7 +698,7 @@ final class GitHubConnector: Connector, @unchecked Sendable {
         struct Args: Decodable { var owner: String; var repo: String; var path: String?; var ref: String? }
         let args = try decodeArgs(Args.self, from: argsData)
         let items = try await client.getRepoContents(owner: args.owner, repo: args.repo, path: args.path ?? "", ref: args.ref)
-        Self.logger.debug("Read GitHub repo contents for \(args.owner, privacy: .public)/\(args.repo, privacy: .public) ref=\(args.ref ?? "<default>", privacy: .public) path=\(self.displayPath(args.path), privacy: .public) itemCount=\(items.count, privacy: .public)")
+        Self.logger.debug("Read GitHub repo contents for \(args.owner)/\(args.repo) ref=\(args.ref ?? "<default>") path=\(self.displayPath(args.path)) itemCount=\(items.count)")
         let result: [[String: String]] = items.map(\.summary)
         return try encodeResult(["items": result])
     }
@@ -714,7 +713,7 @@ final class GitHubConnector: Connector, @unchecked Sendable {
         struct Args: Decodable { var path: String? }
         let args = try decodeArgs(Args.self, from: argsData)
         let items = try await client.getRepoContents(owner: owner, repo: repo, path: args.path ?? "", ref: ref)
-        Self.logger.debug("Read GitHub repo contents for \(owner, privacy: .public)/\(repo, privacy: .public) ref=\(ref, privacy: .public) path=\(self.displayPath(args.path), privacy: .public) itemCount=\(items.count, privacy: .public)")
+        Self.logger.debug("Read GitHub repo contents for \(owner)/\(repo) ref=\(ref) path=\(self.displayPath(args.path)) itemCount=\(items.count)")
         let result: [[String: String]] = items.map(\.summary)
         return try encodeResult(["items": result])
     }
@@ -769,7 +768,7 @@ final class GitHubConnector: Connector, @unchecked Sendable {
                 ? "No entries matched '\(pathPrefix ?? "")' in this repository. Reuse the earlier root tree result or use github_search_paths for conceptual file names instead of scanning more missing subtrees."
                 : nil
         )
-        Self.logger.debug("Read GitHub repo tree for \(repositoryFullName, privacy: .public) branch=\(ref, privacy: .public) prefix=\(pathPrefix ?? "/", privacy: .public) entryType=\(entryFilter.rawValue, privacy: .public) indexedEntries=\(snapshot.treeEntries.count, privacy: .public) returned=\(result.returned_count, privacy: .public) total=\(result.total_matching_count, privacy: .public) truncated=\(result.truncated, privacy: .public) elapsedMs=\(self.elapsedMilliseconds(since: startedAt), privacy: .public)")
+        Self.logger.debug("Read GitHub repo tree for \(repositoryFullName) branch=\(ref) prefix=\(pathPrefix ?? "/") entryType=\(entryFilter.rawValue) indexedEntries=\(snapshot.treeEntries.count) returned=\(result.returned_count) total=\(result.total_matching_count) truncated=\(result.truncated) elapsedMs=\(self.elapsedMilliseconds(since: startedAt))")
         return ExecutionResult(
             output: try encodeResult(result),
             validatedRepository: snapshot
@@ -793,7 +792,7 @@ final class GitHubConnector: Connector, @unchecked Sendable {
             }
         }
         let wasTruncated = result["truncated"] == "true"
-        Self.logger.debug("Read GitHub file for \(args.owner, privacy: .public)/\(args.repo, privacy: .public) ref=\(args.ref ?? "<default>", privacy: .public) path=\(args.path, privacy: .public) size=\(file.size, privacy: .public) truncated=\(wasTruncated, privacy: .public)")
+        Self.logger.debug("Read GitHub file for \(args.owner)/\(args.repo) ref=\(args.ref ?? "<default>") path=\(args.path) size=\(file.size) truncated=\(wasTruncated)")
         return try encodeResult(result)
     }
 
@@ -843,7 +842,7 @@ final class GitHubConnector: Connector, @unchecked Sendable {
             result["content"] = file.content
         }
         let wasTruncated = result["truncated"] == "true"
-        Self.logger.debug("Read GitHub file for \(owner, privacy: .public)/\(repo, privacy: .public) ref=\(ref, privacy: .public) path=\(args.path, privacy: .public) size=\(file.size, privacy: .public) truncated=\(wasTruncated, privacy: .public) elapsedMs=\(self.elapsedMilliseconds(since: startedAt), privacy: .public)")
+        Self.logger.debug("Read GitHub file for \(owner)/\(repo) ref=\(ref) path=\(args.path) size=\(file.size) truncated=\(wasTruncated) elapsedMs=\(self.elapsedMilliseconds(since: startedAt))")
         return ExecutionResult(
             output: try encodeResult(result),
             validatedRepository: readResult.repository
@@ -921,7 +920,7 @@ final class GitHubConnector: Connector, @unchecked Sendable {
                 source_sha: file.sha
             )
         )
-        Self.logger.debug("Read GitHub file lines for \(owner, privacy: .public)/\(repo, privacy: .public) ref=\(ref, privacy: .public) path=\(args.path, privacy: .public) lines=\(result.start_line, privacy: .public)-\(result.end_line, privacy: .public) truncated=\(result.truncated, privacy: .public) elapsedMs=\(self.elapsedMilliseconds(since: startedAt), privacy: .public)")
+        Self.logger.debug("Read GitHub file lines for \(owner)/\(repo) ref=\(ref) path=\(args.path) lines=\(result.start_line)-\(result.end_line) truncated=\(result.truncated) elapsedMs=\(self.elapsedMilliseconds(since: startedAt))")
         return ExecutionResult(
             output: try encodeResult(result),
             validatedRepository: readResult.repository
@@ -995,7 +994,7 @@ final class GitHubConnector: Connector, @unchecked Sendable {
                 source_sha: file.sha
             )
         )
-        Self.logger.debug("Read GitHub file tail for \(owner, privacy: .public)/\(repo, privacy: .public) ref=\(ref, privacy: .public) path=\(args.path, privacy: .public) size=\(file.size, privacy: .public) lines=\(result.start_line, privacy: .public)-\(result.end_line, privacy: .public) truncated=\(result.truncated, privacy: .public) elapsedMs=\(self.elapsedMilliseconds(since: startedAt), privacy: .public)")
+        Self.logger.debug("Read GitHub file tail for \(owner)/\(repo) ref=\(ref) path=\(args.path) size=\(file.size) lines=\(result.start_line)-\(result.end_line) truncated=\(result.truncated) elapsedMs=\(self.elapsedMilliseconds(since: startedAt))")
         return ExecutionResult(
             output: try encodeResult(result),
             validatedRepository: readResult.repository
@@ -1471,7 +1470,7 @@ final class GitHubConnector: Connector, @unchecked Sendable {
         }
 
         let normalizedChanges = try normalizeChanges(changes)
-        Self.logger.notice("GitHub write preflight started for \(owner, privacy: .public)/\(repo, privacy: .public) requestedBase=\(requestedBaseRef ?? "<auto>", privacy: .public) requestedBranch=\(requestedBranchName ?? "<auto>", privacy: .public) normalizedChangeCount=\(normalizedChanges.count, privacy: .public)")
+        Self.logger.notice("GitHub write preflight started for \(owner)/\(repo) requestedBase=\(requestedBaseRef ?? "<auto>") requestedBranch=\(requestedBranchName ?? "<auto>") normalizedChangeCount=\(normalizedChanges.count)")
         let client = try makeClient()
         let repository = try await client.getRepository(owner: owner, repo: repo)
         let afterRepositoryLookup = Date()
@@ -1608,7 +1607,7 @@ final class GitHubConnector: Connector, @unchecked Sendable {
             changes: normalizedChanges,
             diffPreviews: diffPreviews
         )
-        Self.logger.notice("GitHub write preflight completed for \(request.repositoryFullName, privacy: .public) resolvedBase=\(request.resolvedBaseRef, privacy: .public) proposedBranch=\(request.proposedBranchName, privacy: .public) baseCommit=\(self.shortSHA(request.baseCommitSHA), privacy: .public) diffPreviewCount=\(request.diffPreviews.count, privacy: .public) repoLookupMs=\(self.elapsedMilliseconds(since: startedAt, until: afterRepositoryLookup), privacy: .public) baseResolveMs=\(self.elapsedMilliseconds(since: afterRepositoryLookup, until: afterBaseResolution), privacy: .public) branchCheckMs=\(self.elapsedMilliseconds(since: afterBaseResolution, until: afterBranchCheck), privacy: .public) treeLoadMs=\(self.elapsedMilliseconds(since: afterBranchCheck, until: afterTreeLoad), privacy: .public) diffPreviewMs=\(self.elapsedMilliseconds(since: afterTreeLoad, until: afterDiffPreviewBuild), privacy: .public) totalMs=\(self.elapsedMilliseconds(since: startedAt), privacy: .public)")
+        Self.logger.notice("GitHub write preflight completed for \(request.repositoryFullName) resolvedBase=\(request.resolvedBaseRef) proposedBranch=\(request.proposedBranchName) baseCommit=\(self.shortSHA(request.baseCommitSHA)) diffPreviewCount=\(request.diffPreviews.count) repoLookupMs=\(self.elapsedMilliseconds(since: startedAt, until: afterRepositoryLookup)) baseResolveMs=\(self.elapsedMilliseconds(since: afterRepositoryLookup, until: afterBaseResolution)) branchCheckMs=\(self.elapsedMilliseconds(since: afterBaseResolution, until: afterBranchCheck)) treeLoadMs=\(self.elapsedMilliseconds(since: afterBranchCheck, until: afterTreeLoad)) diffPreviewMs=\(self.elapsedMilliseconds(since: afterTreeLoad, until: afterDiffPreviewBuild)) totalMs=\(self.elapsedMilliseconds(since: startedAt))")
         return request
     }
 

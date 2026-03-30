@@ -1,6 +1,5 @@
 import Combine
 import Foundation
-import OSLog
 import SwiftData
 
 @MainActor
@@ -12,12 +11,16 @@ final class ChatViewModel: ObservableObject {
     private static let maxPromptBasedLineWindowReplayChars = 4_000
     private static let maxPromptBasedSummaryReplayChars = 320
     private static let maxPromptBasedSearchCodeSnippetChars = 400
-    private static let logger = Logger(subsystem: "steven.Porch", category: "ChatViewModel")
+    private static let logger = PorchLogger(category: "ChatViewModel")
 
     @Published var composerText = ""
     @Published var nextMessageParameterOverride: GenerationParameters?
     @Published var streamingText = ""
+    @Published var streamingThinkingText = ""
+    @Published var isModelThinking = false
+    @Published var pendingImages: [ImageAttachment] = []
     @Published var isStreaming = false
+    @Published var lastTokenUsage: TokenUsage?
     @Published var errorMessage: String?
     @Published var infoMessage: String?
     @Published private(set) var pendingGitHubWriteApproval: PendingGitHubWriteApproval?
@@ -31,6 +34,9 @@ final class ChatViewModel: ObservableObject {
     private let apiKeyAccount = "active-server-api-key"
     private let githubConnector: GitHubConnector
     private let webSearchConnector: WebSearchConnector
+    private let logStoreConnector: LogStoreConnector
+    private let memoryConnector: MemoryConnector?
+    private var mcpConnectors: [MCPConnector] = []
 
     private var streamTask: Task<Void, Never>?
     private var stopRequested = false
@@ -45,7 +51,9 @@ final class ChatViewModel: ObservableObject {
         client: OpenAICompatibleClient = OpenAICompatibleClient(),
         keychain: KeychainStoreProtocol = KeychainStore(),
         githubConnector: GitHubConnector = GitHubConnector(),
-        webSearchConnector: WebSearchConnector = WebSearchConnector()
+        webSearchConnector: WebSearchConnector = WebSearchConnector(),
+        logStoreConnector: LogStoreConnector = LogStoreConnector(),
+        memoryConnector: MemoryConnector? = nil
     ) {
         self.chat = chat
         self.settings = settings
@@ -54,6 +62,8 @@ final class ChatViewModel: ObservableObject {
         self.keychain = keychain
         self.githubConnector = githubConnector
         self.webSearchConnector = webSearchConnector
+        self.logStoreConnector = logStoreConnector
+        self.memoryConnector = memoryConnector
     }
 
     deinit {
@@ -67,7 +77,7 @@ final class ChatViewModel: ObservableObject {
     func sendCurrentInput() {
         let trimmed = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        Self.logger.notice("User submitted chat input (\(trimmed.count, privacy: .public) chars): \(trimmed, privacy: .public)")
+        Self.logger.notice("User submitted chat input (\(trimmed.count) chars): \(trimmed)")
         let parameters = nextMessageParameterOverride ?? settings.generationParameters
         nextMessageParameterOverride = nil
         composerText = ""
@@ -103,7 +113,7 @@ final class ChatViewModel: ObservableObject {
         do {
             try modelContext.save()
         } catch {
-            Self.logger.error("Save failed during regenerateLastResponse: \(error.localizedDescription, privacy: .public)")
+            Self.logger.error("Save failed during regenerateLastResponse: \(error.localizedDescription)")
         }
         startStreamingConversation(parameters: settings.generationParameters)
     }
@@ -156,7 +166,16 @@ final class ChatViewModel: ObservableObject {
     }
 
     private func send(messageText: String, parameters: GenerationParameters) {
-        let userMessage = ChatMessage(role: .user, content: messageText, thread: chat)
+        let images = pendingImages
+        pendingImages = []
+
+        let userMessage = ChatMessage(
+            role: .user,
+            content: messageText,
+            thread: chat,
+            imageData: images.first?.imageData,
+            imageMimeType: images.first?.mimeType
+        )
         modelContext.insert(userMessage)
         if chat.isUntitled {
             chat.title = ChatTitleGenerator.title(for: messageText)
@@ -165,17 +184,21 @@ final class ChatViewModel: ObservableObject {
         do {
             try modelContext.save()
         } catch {
-            Self.logger.error("Save failed during send: \(error.localizedDescription, privacy: .public)")
+            Self.logger.error("Save failed during send: \(error.localizedDescription)")
         }
         startStreamingConversation(parameters: parameters)
     }
 
     private func startStreamingConversation(parameters: GenerationParameters) {
-        Self.logger.notice("Starting stream for \(self.chat.modelID, privacy: .public) temp=\(parameters.temperature, privacy: .public) maxTokens=\(parameters.maxTokens, privacy: .public) topP=\(parameters.topP, privacy: .public) freqPenalty=\(parameters.frequencyPenalty, privacy: .public) presPenalty=\(parameters.presencePenalty, privacy: .public)")
+        Self.logger.notice("Starting stream for \(self.chat.modelID) temp=\(parameters.temperature) maxTokens=\(parameters.maxTokens) topP=\(parameters.topP) freqPenalty=\(parameters.frequencyPenalty) presPenalty=\(parameters.presencePenalty)")
         streamTask?.cancel()
         errorMessage = nil
         infoMessage = nil
         streamingText = ""
+        streamingThinkingText = ""
+        isModelThinking = false
+        lastTokenUsage = nil
+        imageBase64Cache = [:]
         isStreaming = true
         stopRequested = false
         activeGitHubToolActivity = nil
@@ -201,6 +224,14 @@ final class ChatViewModel: ObservableObject {
     }
 
     private func runToolCallingLoop(configuration: ServerConfiguration, parameters: GenerationParameters) async {
+        // Pre-fetch memories for context injection
+        if settings.isMemoryConnectorEnabled, let memoryConnector {
+            cachedMemorySnippet = await memoryConnector.memoryContextSnippet()
+        }
+
+        // Discover MCP tools from configured servers
+        await discoverMCPTools()
+
         var roundsRemaining = Self.maxToolCallRounds
 
         while roundsRemaining > 0 {
@@ -226,7 +257,7 @@ final class ChatViewModel: ObservableObject {
 
                 switch result {
                 case .textCompleted(let finishReason):
-                    Self.logger.notice("Tool loop completed without more tool calls in round \(roundNumber, privacy: .public). finishReason=\(String(describing: finishReason), privacy: .public)")
+                    Self.logger.notice("Tool loop completed without more tool calls in round \(roundNumber). finishReason=\(String(describing: finishReason))")
                     infoMessage = finishReason?.userMessage
                     return
 
@@ -245,9 +276,9 @@ final class ChatViewModel: ObservableObject {
 
                 case .toolCallsReceived(let toolCalls, let assistantContent):
                     let toolNames = toolCalls.map(\.function.name).joined(separator: ", ")
-                    Self.logger.notice("Tool loop round \(roundNumber, privacy: .public) received \(toolCalls.count, privacy: .public) tool call(s): \(toolNames, privacy: .public)")
+                    Self.logger.notice("Tool loop round \(roundNumber) received \(toolCalls.count) tool call(s): \(toolNames)")
                     if let assistantContent, !assistantContent.isEmpty {
-                        Self.logger.debug("Assistant included \(assistantContent.count, privacy: .public) characters alongside tool calls in round \(roundNumber, privacy: .public)")
+                        Self.logger.debug("Assistant included \(assistantContent.count) characters alongside tool calls in round \(roundNumber)")
                     }
 
                     if toolLoopExecutionState.isAnswerOnlyRound {
@@ -282,6 +313,14 @@ final class ChatViewModel: ObservableObject {
                         activeGitHubToolActivity = nil
                     }
                     streamingText = ""
+
+                    // Refresh memory context if a memory was saved this round
+                    if settings.isMemoryConnectorEnabled,
+                       let memoryConnector,
+                       toolCalls.contains(where: { $0.function.name == "save_memory" }) {
+                        cachedMemorySnippet = await memoryConnector.memoryContextSnippet()
+                    }
+
                     activeGitHubToolActivity = nil
                     gitHubExecutionState.finishRoundIfNeeded(logger: Self.logger)
                     toolLoopExecutionState.isAnswerOnlyRound = gitHubExecutionState.answerFromEvidenceMode
@@ -293,18 +332,21 @@ final class ChatViewModel: ObservableObject {
                     // Continue the loop for another round
 
                 case .cancelled:
-                    Self.logger.notice("Tool loop cancelled in round \(roundNumber, privacy: .public)")
+                    Self.logger.notice("Tool loop cancelled in round \(roundNumber)")
                     activeGitHubToolActivity = nil
                     return
 
                 case .error(let error):
-                    Self.logger.error("Tool loop failed in round \(roundNumber, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                    Self.logger.error("Tool loop failed in round \(roundNumber): \(error.localizedDescription)")
                     activeGitHubToolActivity = nil
                     errorMessage = error.localizedDescription
                     return
                 }
             } catch {
-                Self.logger.error("Failed to build or run tool loop round \(roundNumber, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                Self.logger.error("Failed to build or run tool loop round \(roundNumber): \(error.localizedDescription)")
+                streamingText = ""
+                streamingThinkingText = ""
+                isModelThinking = false
                 activeGitHubToolActivity = nil
                 errorMessage = error.localizedDescription
                 return
@@ -312,7 +354,7 @@ final class ChatViewModel: ObservableObject {
         }
 
         // Safety limit reached
-        Self.logger.warning("Tool loop stopped after reaching max rounds: \(Self.maxToolCallRounds, privacy: .public)")
+        Self.logger.warning("Tool loop stopped after reaching max rounds: \(Self.maxToolCallRounds)")
         infoMessage = "Stopped after \(Self.maxToolCallRounds) tool-calling rounds."
     }
 
@@ -328,6 +370,7 @@ final class ChatViewModel: ObservableObject {
         var draftText = ""
         var finishReason: ChatFinishReason?
         var receivedToolCalls: [ToolCall]?
+        var roundUsage: TokenUsage?
         let clock = ContinuousClock()
         var lastPublishedAt = clock.now
         let roundStartTime = clock.now
@@ -345,6 +388,9 @@ final class ChatViewModel: ObservableObject {
                     )
                 case .toolCalls(let calls):
                     receivedToolCalls = calls
+                case .usage(let usage):
+                    roundUsage = usage
+                    lastTokenUsage = usage
                 case .completed(let reason):
                     finishReason = reason
                 }
@@ -368,7 +414,7 @@ final class ChatViewModel: ObservableObject {
             // If we received tool calls, return them for the loop to handle
             if let toolCalls = receivedToolCalls, !toolCalls.isEmpty {
                 toolLoopExecutionState.recordObservedNativeToolCalls()
-                Self.logger.notice("Stream round completed in \(roundDuration, privacy: .public) with \(toolCalls.count, privacy: .public) native tool call(s), responseLength=\(draftText.count, privacy: .public)")
+                Self.logger.notice("Stream round completed in \(roundDuration) with \(toolCalls.count) native tool call(s), responseLength=\(draftText.count)")
                 let content = draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : draftText
                 printFullStreamedLLMOutput(
                     draftText,
@@ -400,7 +446,7 @@ final class ChatViewModel: ObservableObject {
             }
 
             // Normal text completion
-            Self.logger.notice("Stream round completed in \(roundDuration, privacy: .public) with text, responseLength=\(draftText.count, privacy: .public) finishReason=\(String(describing: finishReason), privacy: .public)")
+            Self.logger.notice("Stream round completed in \(roundDuration) with text, responseLength=\(draftText.count) finishReason=\(String(describing: finishReason))")
             printFullStreamedLLMOutput(
                 draftText,
                 finishReason: finishReason,
@@ -409,16 +455,16 @@ final class ChatViewModel: ObservableObject {
             )
             if toolLoopExecutionState.hasPersistedToolResultInCurrentRun,
                draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Self.logger.warning("Ignoring blank assistant completion after tool use and requesting one synthesis retry. finishReason=\(String(describing: finishReason), privacy: .public)")
+                Self.logger.warning("Ignoring blank assistant completion after tool use and requesting one synthesis retry. finishReason=\(String(describing: finishReason))")
                 streamingText = ""
                 return .blankTextAfterToolUse(finishReason)
             }
-            persistAssistantDraft(text: draftText, isPartial: false, finishReason: finishReason)
+            persistAssistantDraft(text: draftText, isPartial: false, finishReason: finishReason, usage: roundUsage)
             return .textCompleted(finishReason)
 
         } catch is CancellationError {
             let roundDuration = clock.now - roundStartTime
-            Self.logger.notice("Stream round cancelled after \(roundDuration, privacy: .public), draftLength=\(draftText.count, privacy: .public)")
+            Self.logger.notice("Stream round cancelled after \(roundDuration), draftLength=\(draftText.count)")
             flushStreamingDraft(draftText)
             printFullStreamedLLMOutput(
                 draftText,
@@ -430,7 +476,7 @@ final class ChatViewModel: ObservableObject {
             return .cancelled
         } catch {
             let roundDuration = clock.now - roundStartTime
-            Self.logger.error("Stream round failed after \(roundDuration, privacy: .public): \(error.localizedDescription, privacy: .public) draftLength=\(draftText.count, privacy: .public)")
+            Self.logger.error("Stream round failed after \(roundDuration): \(error.localizedDescription) draftLength=\(draftText.count)")
             flushStreamingDraft(draftText)
             let hadDraft = !draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             if hadDraft {
@@ -475,7 +521,20 @@ final class ChatViewModel: ObservableObject {
             }
         }
 
-        Self.logger.debug("Resolved \(tools.count, privacy: .public) tools: webSearch=\(webSearchEnabled, privacy: .public)/\(webSearchConfigured, privacy: .public) github=\(githubEnabled, privacy: .public)/\(githubConfigured, privacy: .public)/\(hasGithubContext, privacy: .public)")
+        // Log store is always available for LLM self-debugging
+        tools.append(contentsOf: logStoreConnector.toolDefinitions)
+
+        // Memory connector
+        if settings.isMemoryConnectorEnabled, let memoryConnector {
+            tools.append(contentsOf: memoryConnector.toolDefinitions)
+        }
+
+        // MCP connectors
+        for mcpConnector in mcpConnectors {
+            tools.append(contentsOf: mcpConnector.toolDefinitions)
+        }
+
+        Self.logger.debug("Resolved \(tools.count) tools: webSearch=\(webSearchEnabled)/\(webSearchConfigured) github=\(githubEnabled)/\(githubConfigured)/\(hasGithubContext) logStore=true memory=\(settings.isMemoryConnectorEnabled) mcp=\(mcpConnectors.count)")
         return tools.isEmpty ? nil : tools
     }
 
@@ -531,7 +590,54 @@ final class ChatViewModel: ObservableObject {
 
     private func executeToolCall(_ toolCall: ToolCall) async -> String? {
         let startedAt = Date()
-        Self.logger.notice("Executing tool \(toolCall.function.name, privacy: .public) callId=\(toolCall.id, privacy: .public) args=\(toolCall.function.arguments.prefix(500), privacy: .public)")
+        Self.logger.notice("Executing tool \(toolCall.function.name) callId=\(toolCall.id) args=\(toolCall.function.arguments.prefix(500))")
+
+        if logStoreConnector.toolDefinitions.contains(where: { $0.function.name == toolCall.function.name }) {
+            do {
+                let result = try await logStoreConnector.execute(
+                    toolName: toolCall.function.name,
+                    arguments: toolCall.function.arguments
+                )
+                Self.logger.notice("Tool \(toolCall.function.name) completed in \(Self.elapsedMilliseconds(since: startedAt))ms resultLength=\(result.count)")
+                return result
+            } catch {
+                Self.logger.error("Tool \(toolCall.function.name) failed after \(Self.elapsedMilliseconds(since: startedAt))ms: \(error.localizedDescription)")
+                return "{\"error\": \"\(error.localizedDescription)\"}"
+            }
+        }
+
+        if let memoryConnector,
+           memoryConnector.toolDefinitions.contains(where: { $0.function.name == toolCall.function.name }) {
+            do {
+                let result = try await memoryConnector.execute(
+                    toolName: toolCall.function.name,
+                    arguments: toolCall.function.arguments
+                )
+                Self.logger.notice("Tool \(toolCall.function.name) completed in \(Self.elapsedMilliseconds(since: startedAt))ms resultLength=\(result.count)")
+                return result
+            } catch {
+                Self.logger.error("Tool \(toolCall.function.name) failed after \(Self.elapsedMilliseconds(since: startedAt))ms: \(error.localizedDescription)")
+                return "{\"error\": \"\(error.localizedDescription)\"}"
+            }
+        }
+
+        // MCP connectors
+        for mcpConnector in mcpConnectors {
+            if mcpConnector.toolDefinitions.contains(where: { $0.function.name == toolCall.function.name }) {
+                do {
+                    let result = try await mcpConnector.execute(
+                        toolName: toolCall.function.name,
+                        arguments: toolCall.function.arguments
+                    )
+                    Self.logger.notice("MCP tool \(toolCall.function.name) completed in \(Self.elapsedMilliseconds(since: startedAt))ms resultLength=\(result.count)")
+                    return result
+                } catch {
+                    Self.logger.error("MCP tool \(toolCall.function.name) failed after \(Self.elapsedMilliseconds(since: startedAt))ms: \(error.localizedDescription)")
+                    return "{\"error\": \"\(error.localizedDescription)\"}"
+                }
+            }
+        }
+
         if settings.isWebSearchConnectorEnabled,
            webSearchConnector.toolDefinitions.contains(where: { $0.function.name == toolCall.function.name }) {
             do {
@@ -539,17 +645,24 @@ final class ChatViewModel: ObservableObject {
                     toolName: toolCall.function.name,
                     arguments: toolCall.function.arguments
                 )
-                Self.logger.notice("Web tool \(toolCall.function.name, privacy: .public) completed in \(Self.elapsedMilliseconds(since: startedAt), privacy: .public)ms resultBytes=\(result.count, privacy: .public)")
+                Self.logger.notice("Web tool \(toolCall.function.name) completed in \(Self.elapsedMilliseconds(since: startedAt))ms resultBytes=\(result.count)")
                 return result
             } catch {
-                Self.logger.error("Web tool \(toolCall.function.name, privacy: .public) failed after \(Self.elapsedMilliseconds(since: startedAt), privacy: .public)ms: \(error.localizedDescription, privacy: .public)")
+                Self.logger.error("Web tool \(toolCall.function.name) failed after \(Self.elapsedMilliseconds(since: startedAt))ms: \(error.localizedDescription)")
                 return "{\"error\": \"\(error.localizedDescription)\"}"
             }
         }
 
+        // Check if this is a GitHub tool before entering the GitHub block
+        guard settings.isGitHubConnectorEnabled,
+              githubConnector.isConfigured else {
+            Self.logger.error("Tool \(toolCall.function.name) not found in any connector callId=\(toolCall.id)")
+            return "{\"error\": \"Unknown tool: \(toolCall.function.name)\"}"
+        }
+
         do {
             guard let githubContext = chat.githubContext else {
-                Self.logger.error("GitHub tool \(toolCall.function.name, privacy: .public) was requested without a selected repo context")
+                Self.logger.error("GitHub tool \(toolCall.function.name) was requested without a selected repo context")
                 return "{\"error\":\"GitHub tools require a selected repository and branch in this chat.\"}"
             }
 
@@ -565,7 +678,7 @@ final class ChatViewModel: ObservableObject {
                 branch: githubContext.branch,
                 statusLabel: "Running"
             )
-            Self.logger.notice("Executing GitHub tool \(toolCall.function.name, privacy: .public) for \(githubContext.repositoryLabel, privacy: .public) on branch \(githubContext.branch, privacy: .public)")
+            Self.logger.notice("Executing GitHub tool \(toolCall.function.name) for \(githubContext.repositoryLabel) on branch \(githubContext.branch)")
 
             if gitHubExecutionState.answerFromEvidenceMode {
                 let advisory = GitHubToolAdvisoryResult(
@@ -600,7 +713,7 @@ final class ChatViewModel: ObservableObject {
                     arguments: effectiveArguments,
                     context: githubContext
                 )
-                Self.logger.notice("Prepared GitHub write request for \(request.repositoryFullName, privacy: .public) base=\(request.resolvedBaseRef, privacy: .public) proposedBranch=\(request.proposedBranchName, privacy: .public) changeCount=\(request.changes.count, privacy: .public)")
+                Self.logger.notice("Prepared GitHub write request for \(request.repositoryFullName) base=\(request.resolvedBaseRef) proposedBranch=\(request.proposedBranchName) changeCount=\(request.changes.count)")
                 activeGitHubToolActivity = GitHubToolActivity(
                     toolName: toolCall.function.name,
                     arguments: effectiveArguments,
@@ -610,7 +723,7 @@ final class ChatViewModel: ObservableObject {
                 )
                 switch await waitForGitHubWriteApproval(request: request) {
                 case .approve(let branchName, let commitMessage):
-                    Self.logger.notice("User approved GitHub write for \(request.repositoryFullName, privacy: .public) branch=\(branchName, privacy: .public) commitLength=\(commitMessage.count, privacy: .public)")
+                    Self.logger.notice("User approved GitHub write for \(request.repositoryFullName) branch=\(branchName) commitLength=\(commitMessage.count)")
                     activeGitHubToolActivity = GitHubToolActivity(
                         toolName: toolCall.function.name,
                         arguments: effectiveArguments,
@@ -627,12 +740,12 @@ final class ChatViewModel: ObservableObject {
                     gitHubExecutionState.recordWriteProgress(paths: request.changes.map(\.path))
                     gitHubExecutionState.invalidateValidatedRepositories(for: githubContext)
                     let encodedResult = try encodeToolResult(result)
-                    Self.logger.notice("GitHub write completed for \(request.repositoryFullName, privacy: .public) branch=\(result.branch_name, privacy: .public) commit=\(result.commit_sha, privacy: .public) totalMs=\(Self.elapsedMilliseconds(since: startedAt), privacy: .public)")
+                    Self.logger.notice("GitHub write completed for \(request.repositoryFullName) branch=\(result.branch_name) commit=\(result.commit_sha) totalMs=\(Self.elapsedMilliseconds(since: startedAt))")
                     activeGitHubToolActivity = nil
                     return encodedResult
 
                 case .cancelByUser:
-                    Self.logger.notice("User cancelled GitHub write approval for \(request.repositoryFullName, privacy: .public)")
+                    Self.logger.notice("User cancelled GitHub write approval for \(request.repositoryFullName)")
                     streamingText = ""
                     activeGitHubToolActivity = nil
                     let encodedResult = try encodeToolResult(
@@ -642,7 +755,7 @@ final class ChatViewModel: ObservableObject {
                     return encodedResult
 
                 case .stopGeneration:
-                    Self.logger.notice("GitHub write approval dismissed because generation was stopped for \(request.repositoryFullName, privacy: .public)")
+                    Self.logger.notice("GitHub write approval dismissed because generation was stopped for \(request.repositoryFullName)")
                     streamingText = ""
                     activeGitHubToolActivity = nil
                     return nil
@@ -664,11 +777,11 @@ final class ChatViewModel: ObservableObject {
                 result: executionResult.output,
                 context: githubContext
             )
-            Self.logger.notice("GitHub tool \(toolCall.function.name, privacy: .public) completed for \(githubContext.repositoryLabel, privacy: .public) in \(Self.elapsedMilliseconds(since: startedAt), privacy: .public)ms resultBytes=\(executionResult.output.count, privacy: .public)")
+            Self.logger.notice("GitHub tool \(toolCall.function.name) completed for \(githubContext.repositoryLabel) in \(Self.elapsedMilliseconds(since: startedAt))ms resultBytes=\(executionResult.output.count)")
             activeGitHubToolActivity = nil
             return executionResult.output
         } catch {
-            Self.logger.error("GitHub tool \(toolCall.function.name, privacy: .public) failed after \(Self.elapsedMilliseconds(since: startedAt), privacy: .public)ms: \(error.localizedDescription, privacy: .public)")
+            Self.logger.error("GitHub tool \(toolCall.function.name) failed after \(Self.elapsedMilliseconds(since: startedAt))ms: \(error.localizedDescription)")
             activeGitHubToolActivity = nil
             return "{\"error\": \"\(error.localizedDescription)\"}"
         }
@@ -694,7 +807,7 @@ final class ChatViewModel: ObservableObject {
         do {
             try modelContext.save()
         } catch {
-            Self.logger.error("Save failed in persistAssistantToolCallMessage: \(error.localizedDescription, privacy: .public)")
+            Self.logger.error("Save failed in persistAssistantToolCallMessage: \(error.localizedDescription)")
         }
         streamingText = ""
     }
@@ -714,7 +827,7 @@ final class ChatViewModel: ObservableObject {
         do {
             try modelContext.save()
         } catch {
-            Self.logger.error("Save failed in persistToolResultMessage for \(toolCall.function.name, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            Self.logger.error("Save failed in persistToolResultMessage for \(toolCall.function.name): \(error.localizedDescription)")
         }
         toolLoopExecutionState.recordPersistedToolResult()
     }
@@ -738,6 +851,9 @@ final class ChatViewModel: ObservableObject {
         )
     }
 
+    private var cachedMemorySnippet: String?
+    private var imageBase64Cache: [UUID: String] = [:]
+
     private func latestUserPromptText() -> String {
         if let latestUserMessage = chat.sortedMessages.last(where: { $0.role == .user })?.content,
            !latestUserMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -753,6 +869,14 @@ final class ChatViewModel: ObservableObject {
         let usePromptBasedReplay = toolLoopExecutionState.shouldUsePromptBasedReplay(for: settings.toolCallingMode)
         if !chat.systemPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             messages.append(OpenAIChatMessage(role: MessageRole.system.rawValue, content: chat.systemPrompt))
+        }
+
+        // Inject stored memories into context
+        if settings.isMemoryConnectorEnabled, let snippet = cachedMemorySnippet, !snippet.isEmpty {
+            messages.append(OpenAIChatMessage(
+                role: MessageRole.system.rawValue,
+                content: snippet
+            ))
         }
 
         if shouldInjectToolCallingPrompt(tools: toolPromptTools),
@@ -877,12 +1001,29 @@ final class ChatViewModel: ObservableObject {
                 }
 
             default:
-                messages.append(
-                    OpenAIChatMessage(
+                if let imageData = message.imageData,
+                   let mimeType = message.imageMimeType {
+                    let base64 = imageBase64Cache[message.id] ?? {
+                        let encoded = imageData.base64EncodedString()
+                        imageBase64Cache[message.id] = encoded
+                        return encoded
+                    }()
+                    let dataURL = "data:\(mimeType);base64,\(base64)"
+                    messages.append(OpenAIChatMessage(
                         role: message.role.rawValue,
-                        content: message.content
+                        contentParts: [
+                            .text(message.content),
+                            .imageURL(dataURL)
+                        ]
+                    ))
+                } else {
+                    messages.append(
+                        OpenAIChatMessage(
+                            role: message.role.rawValue,
+                            content: message.content
+                        )
                     )
-                )
+                }
             }
         }
 
@@ -899,7 +1040,7 @@ final class ChatViewModel: ObservableObject {
         }
         let replayStyleLabel = usePromptBasedReplay ? "promptBased" : "native"
         let recoveryActive = toolLoopExecutionState.didAttemptBlankToolResponseRecovery
-        Self.logger.notice("Outbound messages: \(messages.count, privacy: .public) total (system=\(systemMsgCount, privacy: .public) user=\(userMsgCount, privacy: .public) assistant=\(assistantMsgCount, privacy: .public) tool=\(toolMsgCount, privacy: .public)) totalChars=\(totalChars, privacy: .public) toolReplay=\(replayStyleLabel, privacy: .public) blankRecovery=\(recoveryActive, privacy: .public)")
+        Self.logger.notice("Outbound messages: \(messages.count) total (system=\(systemMsgCount) user=\(userMsgCount) assistant=\(assistantMsgCount) tool=\(toolMsgCount)) totalChars=\(totalChars) toolReplay=\(replayStyleLabel) blankRecovery=\(recoveryActive)")
         return messages
     }
 
@@ -1335,7 +1476,7 @@ final class ChatViewModel: ObservableObject {
                     path_prefix: pathPrefix,
                     suggested_next_step: "Stop guessing more missing folders. Use github_search_paths with the conceptual file name, then read the matched file directly."
                 )
-                Self.logger.notice("Redirecting repeated empty GitHub subtree scan for \(context.repositoryLabel, privacy: .public) branch=\(context.branch, privacy: .public) prefix=\(pathPrefix, privacy: .public)")
+                Self.logger.notice("Redirecting repeated empty GitHub subtree scan for \(context.repositoryLabel) branch=\(context.branch) prefix=\(pathPrefix)")
                 gitHubExecutionState.recordNoProgress(reason: "repo_tree_empty_redirect", logger: Self.logger)
                 return try? encodeToolResult(advisory)
             }
@@ -1367,7 +1508,7 @@ final class ChatViewModel: ObservableObject {
                 path: readKey.path,
                 suggested_next_step: suggestedNextStep
             )
-            Self.logger.notice("Suppressing redundant GitHub file read for \(context.repositoryLabel, privacy: .public) branch=\(context.branch, privacy: .public) path=\(readKey.path, privacy: .public) truncated=\(priorRead.wasTruncated, privacy: .public)")
+            Self.logger.notice("Suppressing redundant GitHub file read for \(context.repositoryLabel) branch=\(context.branch) path=\(readKey.path) truncated=\(priorRead.wasTruncated)")
             gitHubExecutionState.recordNoProgress(reason: "file_read_redundant", logger: Self.logger)
             return try? encodeToolResult(advisory)
 
@@ -1408,7 +1549,7 @@ final class ChatViewModel: ObservableObject {
             )
             gitHubExecutionState.incrementSearchAdvisoryCount(for: searchKey)
             let updatedObservation = gitHubExecutionState.searchObservations[searchKey] ?? observation
-            Self.logger.notice("Suppressing redundant GitHub search call for \(context.repositoryLabel, privacy: .public) branch=\(context.branch, privacy: .public) tool=\(toolCall.function.name, privacy: .public) query=\(searchKey.normalizedQuery, privacy: .public) repeats=\(updatedObservation.noProgressRepeatCount, privacy: .public) advisoryCount=\(updatedObservation.advisoryCount, privacy: .public)")
+            Self.logger.notice("Suppressing redundant GitHub search call for \(context.repositoryLabel) branch=\(context.branch) tool=\(toolCall.function.name) query=\(searchKey.normalizedQuery) repeats=\(updatedObservation.noProgressRepeatCount) advisoryCount=\(updatedObservation.advisoryCount)")
             gitHubExecutionState.recordNoProgress(reason: "search_redundant:\(searchKey.normalizedQuery)", logger: Self.logger)
             return try? encodeToolResult(advisory)
 
@@ -1764,8 +1905,39 @@ final class ChatViewModel: ObservableObject {
     }
 
     private func flushStreamingDraft(_ draftText: String) {
-        guard streamingText != draftText else { return }
-        streamingText = draftText
+        let isThinking = ThinkingContentParser.isInsideThinkBlock(draftText)
+        isModelThinking = isThinking
+
+        if isThinking {
+            // While inside a think block, show the thinking content being generated
+            let parsed = ThinkingContentParser.parse(draftText)
+            // The unclosed think block is at the end — extract it
+            let thinkingInProgress = extractOpenThinkBlock(from: draftText)
+            streamingThinkingText = parsed.thinking.isEmpty ? thinkingInProgress : parsed.thinking + "\n\n" + thinkingInProgress
+            streamingText = parsed.visible
+        } else {
+            let parsed = ThinkingContentParser.parse(draftText)
+            streamingThinkingText = parsed.thinking
+            streamingText = parsed.visible
+        }
+    }
+
+    private func extractOpenThinkBlock(from text: String) -> String {
+        // Find the last open <think> or <thinking> tag without a matching close
+        let patterns: [(open: String, close: String)] = [
+            ("<think>", "</think>"),
+            ("<thinking>", "</thinking>")
+        ]
+
+        for (open, close) in patterns {
+            if let openRange = text.range(of: open, options: .backwards) {
+                let afterOpen = text[openRange.upperBound...]
+                if afterOpen.range(of: close) == nil {
+                    return String(afterOpen).trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+            }
+        }
+        return ""
     }
 
     private func printFullStreamedLLMOutput(
@@ -1782,28 +1954,49 @@ final class ChatViewModel: ObservableObject {
         print("[LLM streamed output end]")
     }
 
-    private func persistAssistantDraft(text: String, isPartial: Bool, finishReason: ChatFinishReason?) {
+    private func persistAssistantDraft(text: String, isPartial: Bool, finishReason: ChatFinishReason?, usage: TokenUsage? = nil) {
         let finalText = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !finalText.isEmpty else {
             streamingText = ""
+            streamingThinkingText = ""
+            isModelThinking = false
+            return
+        }
+
+        // Separate thinking content from visible content
+        let parsed = ThinkingContentParser.parse(finalText)
+        let visibleContent = parsed.visible
+        let thinkingContent = parsed.thinking.isEmpty ? nil : parsed.thinking
+
+        // If the model produced only thinking with no visible answer, persist it
+        // with empty content so the thinking is still accessible
+        guard !visibleContent.isEmpty || thinkingContent != nil else {
+            streamingText = ""
+            streamingThinkingText = ""
+            isModelThinking = false
             return
         }
 
         let assistantMessage = ChatMessage(
             role: .assistant,
-            content: finalText,
+            content: visibleContent,
             thread: chat,
             isPartial: isPartial,
-            finishReason: finishReason
+            finishReason: finishReason,
+            thinkingContent: thinkingContent,
+            promptTokens: usage?.promptTokens,
+            completionTokens: usage?.completionTokens
         )
         modelContext.insert(assistantMessage)
         chat.applyMessageMutation(latestMessage: assistantMessage)
         do {
             try modelContext.save()
         } catch {
-            Self.logger.error("Save failed in persistAssistantDraft: \(error.localizedDescription, privacy: .public)")
+            Self.logger.error("Save failed in persistAssistantDraft: \(error.localizedDescription)")
         }
         streamingText = ""
+        streamingThinkingText = ""
+        isModelThinking = false
     }
 
     private func shouldRefreshTitle(
@@ -1842,6 +2035,43 @@ final class ChatViewModel: ObservableObject {
         return mapping[name] ?? name
     }
 
+    private func discoverMCPTools() async {
+        mcpConnectors = []
+        let enabledConfigs = settings.mcpServerConfigs.filter(\.isEnabled)
+        guard !enabledConfigs.isEmpty else { return }
+
+        for config in enabledConfigs {
+            guard let url = URL(string: config.url) else { continue }
+            var headers: [String: String] = [:]
+            if let auth = config.authorizationHeader {
+                headers["Authorization"] = auth
+            }
+
+            let connector = MCPConnector(
+                serverURL: url,
+                displayName: config.name,
+                headers: headers
+            )
+
+            do {
+                // Timeout after 5 seconds to avoid blocking the first message
+                try await withThrowingTaskGroup(of: Void.self) { group in
+                    group.addTask { try await connector.discoverTools() }
+                    group.addTask {
+                        try await Task.sleep(for: .seconds(5))
+                        throw CancellationError()
+                    }
+                    try await group.next()
+                    group.cancelAll()
+                }
+                mcpConnectors.append(connector)
+                Self.logger.notice("MCP server \(config.name) discovered \(connector.toolDefinitions.count) tools")
+            } catch {
+                Self.logger.error("MCP server \(config.name) discovery failed or timed out: \(error.localizedDescription)")
+            }
+        }
+    }
+
     private func encodeToolResult<T: Encodable>(_ result: T) throws -> String {
         let data = try JSONEncoder().encode(result)
         return String(decoding: data, as: UTF8.self)
@@ -1853,12 +2083,12 @@ final class ChatViewModel: ObservableObject {
 
     private func waitForGitHubWriteApproval(request: GitHubWriteRequest) async -> GitHubWriteApprovalDecision {
         if stopRequested {
-            Self.logger.notice("Skipping GitHub write approval because generation is already stopping for \(request.repositoryFullName, privacy: .public)")
+            Self.logger.notice("Skipping GitHub write approval because generation is already stopping for \(request.repositoryFullName)")
             return .stopGeneration
         }
 
         let approval = PendingGitHubWriteApproval(request: request)
-        Self.logger.notice("Presenting GitHub write approval for \(approval.repositoryFullName, privacy: .public) base=\(approval.resolvedBaseRef, privacy: .public) proposedBranch=\(approval.proposedBranchName, privacy: .public) created=\(approval.createdCount, privacy: .public) updated=\(approval.updatedCount, privacy: .public) deleted=\(approval.deletedCount, privacy: .public)")
+        Self.logger.notice("Presenting GitHub write approval for \(approval.repositoryFullName) base=\(approval.resolvedBaseRef) proposedBranch=\(approval.proposedBranchName) created=\(approval.createdCount) updated=\(approval.updatedCount) deleted=\(approval.deletedCount)")
         pendingGitHubWriteApproval = approval
         streamingText = "Awaiting approval for GitHub changes..."
 
@@ -1881,7 +2111,7 @@ final class ChatViewModel: ObservableObject {
         case .stopGeneration:
             decisionLabel = "stopGeneration"
         }
-        Self.logger.notice("Resolving GitHub write approval \(pendingState.approvalID.uuidString, privacy: .public) with decision \(decisionLabel, privacy: .public)")
+        Self.logger.notice("Resolving GitHub write approval \(pendingState.approvalID.uuidString) with decision \(decisionLabel)")
         pendingGitHubWriteState = nil
         pendingGitHubWriteApproval = nil
         pendingState.continuation.resume(returning: decision)

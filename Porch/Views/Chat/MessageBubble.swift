@@ -1,4 +1,7 @@
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#endif
 
 enum MessageBubbleID: Hashable, Sendable {
     case persisted(UUID)
@@ -25,12 +28,20 @@ struct MessageBubbleModel: Identifiable, Equatable {
     let toolCallName: String?
     let toolCallArguments: String?
     let toolCallResult: String?
+    let thinkingContent: String?
+    let isModelThinking: Bool
+    let tokenUsage: TokenUsage?
+    let siblingCount: Int
+    let siblingIndex: Int
+    let imageData: Data?
     let toolActivityContext: ToolActivityContext?
 
     init(
         message: ChatMessage,
         isRegenerateEnabled: Bool,
         isEditEnabled: Bool,
+        siblingCount: Int = 1,
+        siblingIndex: Int = 0,
         toolActivityContext: ToolActivityContext? = nil
     ) {
         self.id = .persisted(message.id)
@@ -45,6 +56,16 @@ struct MessageBubbleModel: Identifiable, Equatable {
         self.toolCallName = message.toolCallName
         self.toolCallArguments = message.toolCallArgumentsJSON
         self.toolCallResult = message.toolCallResultJSON
+        self.thinkingContent = message.thinkingContent
+        self.isModelThinking = false
+        self.tokenUsage = message.promptTokens.flatMap { prompt in
+            message.completionTokens.map { completion in
+                TokenUsage(promptTokens: prompt, completionTokens: completion)
+            }
+        }
+        self.siblingCount = siblingCount
+        self.siblingIndex = siblingIndex
+        self.imageData = message.imageData
         self.toolActivityContext = toolActivityContext
     }
 
@@ -61,6 +82,12 @@ struct MessageBubbleModel: Identifiable, Equatable {
         toolCallName: String? = nil,
         toolCallArguments: String? = nil,
         toolCallResult: String? = nil,
+        thinkingContent: String? = nil,
+        isModelThinking: Bool = false,
+        tokenUsage: TokenUsage? = nil,
+        siblingCount: Int = 1,
+        siblingIndex: Int = 0,
+        imageData: Data? = nil,
         toolActivityContext: ToolActivityContext? = nil
     ) {
         self.id = id
@@ -75,6 +102,12 @@ struct MessageBubbleModel: Identifiable, Equatable {
         self.toolCallName = toolCallName
         self.toolCallArguments = toolCallArguments
         self.toolCallResult = toolCallResult
+        self.thinkingContent = thinkingContent
+        self.isModelThinking = isModelThinking
+        self.tokenUsage = tokenUsage
+        self.siblingCount = siblingCount
+        self.siblingIndex = siblingIndex
+        self.imageData = imageData
         self.toolActivityContext = toolActivityContext
     }
 
@@ -91,6 +124,8 @@ struct MessageBubble: View, Equatable {
     let model: MessageBubbleModel
     let onRegenerate: () -> Void
     let onEdit: (UUID) -> Void
+
+    let onNavigateBranch: ((UUID, BranchDirection) -> Void)?
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.model == rhs.model
@@ -112,7 +147,24 @@ struct MessageBubble: View, Equatable {
             VStack(alignment: .leading, spacing: 6) {
                 headerRow
 
+                if model.isModelThinking, model.thinkingContent?.isEmpty ?? true {
+                    ThinkingIndicator()
+                }
+
+                if let thinking = model.thinkingContent, !thinking.isEmpty {
+                    ThinkingDisclosure(content: thinking, isStreaming: model.isStreaming)
+                }
+
                 messageContent
+
+                if model.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                   model.thinkingContent != nil,
+                   !model.isStreaming {
+                    Text("No visible response — only reasoning was produced.")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .italic()
+                }
 
                 if model.isPartial || model.finishReason == .cancelled {
                     statusCapsule(text: "Partial")
@@ -142,7 +194,11 @@ struct MessageBubble: View, Equatable {
                 }
             }
 
-            MessageCopyButton(content: model.content)
+            MessageCopyButton(
+                content: model.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ? (model.thinkingContent ?? "")
+                    : model.content
+            )
         }
     }
 
@@ -157,6 +213,16 @@ struct MessageBubble: View, Equatable {
 
     @ViewBuilder
     private var messageContent: some View {
+        #if canImport(UIKit)
+        if let imageData = model.imageData, let uiImage = UIImage(data: imageData) {
+            Image(uiImage: uiImage)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(maxWidth: 280, maxHeight: 200)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        }
+        #endif
+
         switch (model.role, model.isStreaming) {
         case (.assistant, true):
             SelectableMessageTextView(content: model.content, kind: .plainText)
@@ -178,6 +244,20 @@ struct MessageBubble: View, Equatable {
                     .foregroundStyle(.tertiary)
             }
 
+            if let usage = model.tokenUsage, usage.totalTokens > 0 {
+                TokenUsagePill(usage: usage)
+            }
+
+            if model.siblingCount > 1, let persistedID = persistedMessageID {
+                BranchNavigator(
+                    currentIndex: model.siblingIndex,
+                    totalCount: model.siblingCount,
+                    onNavigate: { direction in
+                        onNavigateBranch?(persistedID, direction)
+                    }
+                )
+            }
+
             Spacer(minLength: 0)
 
             if model.role == .assistant, model.isRegenerateEnabled, !model.isStreaming {
@@ -190,7 +270,10 @@ struct MessageBubble: View, Equatable {
     }
 
     private var shouldShowFooter: Bool {
-        model.createdAt != nil || (model.role == .assistant && model.isRegenerateEnabled && !model.isStreaming)
+        model.createdAt != nil
+        || (model.role == .assistant && model.isRegenerateEnabled && !model.isStreaming)
+        || model.tokenUsage != nil
+        || model.siblingCount > 1
     }
 
     private var persistedMessageID: UUID? {
@@ -288,5 +371,138 @@ private struct MessageCopyButton: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
             didCopy = false
         }
+    }
+}
+
+// MARK: - Thinking Mode Views
+
+private struct ThinkingIndicator: View {
+    @State private var opacity: Double = 0.4
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "brain")
+                .font(.caption2)
+            Text("Thinking...")
+                .font(.caption2.weight(.medium))
+        }
+        .foregroundStyle(PorchTheme.accent)
+        .opacity(opacity)
+        .onAppear {
+            withAnimation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true)) {
+                opacity = 1.0
+            }
+        }
+    }
+}
+
+struct ThinkingDisclosure: View {
+    let content: String
+    let isStreaming: Bool
+    @State private var isExpanded: Bool
+    @State private var hasManuallyToggled = false
+
+    init(content: String, isStreaming: Bool = false) {
+        self.content = content
+        self.isStreaming = isStreaming
+        self._isExpanded = State(initialValue: isStreaming)
+    }
+
+    // Collapse automatically when streaming ends, unless user manually toggled
+    private func syncExpansionWithStreaming(_ streaming: Bool) {
+        if !streaming, !hasManuallyToggled {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                isExpanded = false
+            }
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Button {
+                hasManuallyToggled = true
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    isExpanded.toggle()
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                        .font(.caption2.weight(.semibold))
+                    Image(systemName: "brain")
+                        .font(.caption2)
+                    Text("Thought for a moment")
+                        .font(.caption2.weight(.medium))
+                }
+                .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .onChange(of: isStreaming) { _, newValue in
+                syncExpansionWithStreaming(newValue)
+            }
+
+            if isExpanded {
+                ScrollView {
+                    Text(content)
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, maxHeight: 300, alignment: .leading)
+                .background(PorchTheme.inputFieldBackground.opacity(0.5))
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            }
+        }
+    }
+}
+
+// MARK: - Token Usage
+
+struct TokenUsagePill: View {
+    let usage: TokenUsage
+
+    var body: some View {
+        Text("\(usage.formattedTotal) tokens")
+            .font(.system(.caption2, design: .monospaced).weight(.medium))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(PorchTheme.inputFieldBackground)
+            .clipShape(Capsule())
+    }
+}
+
+// MARK: - Branch Navigation
+
+enum BranchDirection {
+    case previous
+    case next
+}
+
+struct BranchNavigator: View {
+    let currentIndex: Int
+    let totalCount: Int
+    let onNavigate: (BranchDirection) -> Void
+
+    var body: some View {
+        HStack(spacing: 2) {
+            Button { onNavigate(.previous) } label: {
+                Image(systemName: "chevron.left")
+                    .font(.caption2.weight(.semibold))
+            }
+            .disabled(currentIndex == 0)
+            .buttonStyle(.plain)
+
+            Text("\(currentIndex + 1)/\(totalCount)")
+                .font(.caption2.weight(.medium))
+
+            Button { onNavigate(.next) } label: {
+                Image(systemName: "chevron.right")
+                    .font(.caption2.weight(.semibold))
+            }
+            .disabled(currentIndex >= totalCount - 1)
+            .buttonStyle(.plain)
+        }
+        .foregroundStyle(.secondary)
     }
 }

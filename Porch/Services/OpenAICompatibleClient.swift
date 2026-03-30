@@ -1,5 +1,4 @@
 import Foundation
-import os
 
 enum StreamError: LocalizedError, Equatable {
     case invalidBaseURL
@@ -31,7 +30,7 @@ enum StreamError: LocalizedError, Equatable {
 }
 
 actor OpenAICompatibleClient {
-    private static let logger = Logger(subsystem: "com.porch.app", category: "API")
+    private static let logger = PorchLogger(category: "API")
     private let session: URLSession
     private let decoder: JSONDecoder
     private let sseParser: SSEParser
@@ -47,7 +46,7 @@ actor OpenAICompatibleClient {
     }
 
     func fetchModels(configuration: ServerConfiguration) async throws -> [RemoteModel] {
-        Self.logger.info("[fetchModels] baseURL=\(configuration.baseURL, privacy: .public)")
+        Self.logger.info("[fetchModels] baseURL=\(configuration.baseURL)")
         let request = try buildModelsRequest(configuration: configuration)
         do {
             let (data, response) = try await session.data(for: request)
@@ -60,7 +59,7 @@ actor OpenAICompatibleClient {
             Self.logger.info("[fetchModels] modelCount=\(models.count)")
             return models.sorted { $0.id.localizedCaseInsensitiveCompare($1.id) == .orderedAscending }
         } catch {
-            Self.logger.error("[fetchModels] error=\(error.localizedDescription, privacy: .public)")
+            Self.logger.error("[fetchModels] error=\(error.localizedDescription)")
             throw error
         }
     }
@@ -90,7 +89,7 @@ actor OpenAICompatibleClient {
         descriptor: OpenAIChatRequestDescriptor,
         continuation: AsyncThrowingStream<ChatStreamEvent, Error>.Continuation
     ) async throws {
-        Self.logger.info("[stream] model=\(descriptor.modelID, privacy: .public) messageCount=\(descriptor.messages.count) hasTools=\(descriptor.tools != nil) toolCount=\(descriptor.tools?.count ?? 0)")
+        Self.logger.info("[stream] model=\(descriptor.modelID) messageCount=\(descriptor.messages.count) hasTools=\(descriptor.tools != nil) toolCount=\(descriptor.tools?.count ?? 0)")
         var yieldedContent = false
 
         do {
@@ -112,10 +111,10 @@ actor OpenAICompatibleClient {
                     // If we accumulated tool calls, yield them before completing
                     if !toolCallAccumulator.isEmpty {
                         let assembled = assembleToolCalls(from: toolCallAccumulator)
-                        Self.logger.info("[stream] assembledToolCalls=\(assembled.count) tools=\(assembled.map(\.function.name).joined(separator: ","), privacy: .public)")
+                        Self.logger.info("[stream] assembledToolCalls=\(assembled.count) tools=\(assembled.map(\.function.name).joined(separator: ","))")
                         continuation.yield(.toolCalls(assembled))
                     }
-                    Self.logger.info("[stream] completed finishReason=\(finishReason?.apiValue ?? "nil", privacy: .public)")
+                    Self.logger.info("[stream] completed finishReason=\(finishReason?.apiValue ?? "nil")")
                     continuation.yield(.completed(finishReason))
                     continuation.finish()
                     return
@@ -148,6 +147,11 @@ actor OpenAICompatibleClient {
                         }
                     }
 
+                    // Emit usage if present (typically in the final chunk)
+                    if let tokenUsage = chunk.usage?.asTokenUsage {
+                        continuation.yield(.usage(tokenUsage))
+                    }
+
                     if let rawReason = chunk.choices.first?.finish_reason {
                         finishReason = ChatFinishReason(apiValue: rawReason)
                     }
@@ -155,10 +159,10 @@ actor OpenAICompatibleClient {
             }
 
             // Stream ended without [DONE]
-            Self.logger.info("[stream] endedWithoutDONE finishReason=\(finishReason?.apiValue ?? "nil", privacy: .public)")
+            Self.logger.info("[stream] endedWithoutDONE finishReason=\(finishReason?.apiValue ?? "nil")")
             if !toolCallAccumulator.isEmpty {
                 let assembled = assembleToolCalls(from: toolCallAccumulator)
-                Self.logger.info("[stream] assembledToolCalls=\(assembled.count) tools=\(assembled.map(\.function.name).joined(separator: ","), privacy: .public)")
+                Self.logger.info("[stream] assembledToolCalls=\(assembled.count) tools=\(assembled.map(\.function.name).joined(separator: ","))")
                 continuation.yield(.toolCalls(assembled))
             }
             continuation.yield(.completed(finishReason))
@@ -171,7 +175,7 @@ actor OpenAICompatibleClient {
                 throw error
             }
 
-            Self.logger.info("[stream] streamingFailed fallingBackToNonStreaming error=\(error.localizedDescription, privacy: .public)")
+            Self.logger.info("[stream] streamingFailed fallingBackToNonStreaming error=\(error.localizedDescription)")
             let fallback = try await fetchNonStreamingCompletion(descriptor: descriptor)
             if let toolCalls = fallback.toolCalls, !toolCalls.isEmpty {
                 continuation.yield(.toolCalls(toolCalls))
@@ -195,7 +199,7 @@ actor OpenAICompatibleClient {
     }
 
     private func fetchNonStreamingCompletion(descriptor: OpenAIChatRequestDescriptor) async throws -> NonStreamingCompletionResult {
-        Self.logger.info("[nonStream] model=\(descriptor.modelID, privacy: .public) messageCount=\(descriptor.messages.count)")
+        Self.logger.info("[nonStream] model=\(descriptor.modelID) messageCount=\(descriptor.messages.count)")
         let request = try buildChatCompletionRequest(descriptor: descriptor, stream: false)
         let (data, response) = try await session.data(for: request)
         try validateHTTP(response: response, body: data)
@@ -208,13 +212,16 @@ actor OpenAICompatibleClient {
 
         let finishReason = firstChoice.finish_reason.map(ChatFinishReason.init(apiValue:))
 
+        let usage = decoded.usage?.asTokenUsage
+
         // Check for tool calls
         if let toolCalls = firstChoice.message.tool_calls, !toolCalls.isEmpty {
-            Self.logger.info("[nonStream] result hasToolCalls=\(toolCalls.count) tools=\(toolCalls.map(\.function.name).joined(separator: ","), privacy: .public) finishReason=\(finishReason?.apiValue ?? "nil", privacy: .public)")
+            Self.logger.info("[nonStream] result hasToolCalls=\(toolCalls.count) tools=\(toolCalls.map(\.function.name).joined(separator: ",")) finishReason=\(finishReason?.apiValue ?? "nil")")
             return NonStreamingCompletionResult(
                 content: firstChoice.message.content,
                 toolCalls: toolCalls,
-                finishReason: finishReason
+                finishReason: finishReason,
+                usage: usage
             )
         }
 
@@ -224,8 +231,8 @@ actor OpenAICompatibleClient {
             throw StreamError.emptyResponse
         }
 
-        Self.logger.info("[nonStream] result contentLength=\(content.count) finishReason=\(finishReason?.apiValue ?? "nil", privacy: .public)")
-        return NonStreamingCompletionResult(content: content, finishReason: finishReason)
+        Self.logger.info("[nonStream] result contentLength=\(content.count) finishReason=\(finishReason?.apiValue ?? "nil")")
+        return NonStreamingCompletionResult(content: content, finishReason: finishReason, usage: usage)
     }
 
     func normalizeBaseURL(_ input: String) throws -> URL {
@@ -313,7 +320,7 @@ actor OpenAICompatibleClient {
         }
         guard (200 ... 299).contains(httpResponse.statusCode) else {
             let message = String(data: body, encoding: .utf8) ?? ""
-            Self.logger.error("[http] statusCode=\(httpResponse.statusCode) body=\(message.prefix(1000), privacy: .public)")
+            Self.logger.error("[http] statusCode=\(httpResponse.statusCode) body=\(message.prefix(1000))")
             throw StreamError.httpError(statusCode: httpResponse.statusCode, body: message)
         }
     }
@@ -334,7 +341,7 @@ actor OpenAICompatibleClient {
         for try await line in lines {
             body.append(line)
         }
-        Self.logger.error("[http] streaming statusCode=\(httpResponse.statusCode) body=\(body.prefix(1000), privacy: .public)")
+        Self.logger.error("[http] streaming statusCode=\(httpResponse.statusCode) body=\(body.prefix(1000))")
         throw StreamError.httpError(statusCode: httpResponse.statusCode, body: body)
     }
 }

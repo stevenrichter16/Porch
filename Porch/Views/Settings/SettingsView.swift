@@ -103,6 +103,23 @@ struct SettingsView: View {
                     Label("Web Search", systemImage: "globe")
                 }
 
+                Toggle(isOn: Binding(
+                    get: { settings.isMemoryConnectorEnabled },
+                    set: { newValue in
+                        settings.isMemoryConnectorEnabled = newValue
+                        settings.markUpdated()
+                    }
+                )) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Label("Memory", systemImage: "brain")
+                        Text("Remember facts across conversations")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                MCPSettingsView(settings: settings)
+
                 Picker(selection: Binding(
                     get: { settings.toolCallingMode },
                     set: { newValue in

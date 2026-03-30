@@ -1,3 +1,4 @@
+import PhotosUI
 import SwiftUI
 
 struct InputBar: View {
@@ -5,11 +6,14 @@ struct InputBar: View {
     let globalParameters: GenerationParameters
     @Binding var nextMessageParameterOverride: GenerationParameters?
     let isStreaming: Bool
+    var pendingImages: Binding<[ImageAttachment]>?
     let onSend: () -> Void
     let onStop: () -> Void
 
     @FocusState private var isFocused: Bool
     @State private var isShowingOverrideSheet = false
+    @State private var selectedPhotoItems: [PhotosPickerItem] = []
+    @State private var isLoadingPhotos = false
     @State private var isShowingPromptSuggestions = false
     @State private var promptSuggestionQuery = ""
 
@@ -19,12 +23,24 @@ struct InputBar: View {
                 overrideChipRow
             }
 
+            if let images = pendingImages?.wrappedValue, !images.isEmpty {
+                imagePreviewRow(images)
+            }
+
             composerRow
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
         .background(PorchTheme.chatBackground)
         .sheet(isPresented: $isShowingOverrideSheet, content: overrideSheet)
+        .onChange(of: selectedPhotoItems) { _, newItems in
+            guard !isLoadingPhotos else { return }
+            isLoadingPhotos = true
+            Task {
+                await loadSelectedPhotos(newItems)
+                isLoadingPhotos = false
+            }
+        }
         .sheet(isPresented: $isShowingPromptSuggestions, onDismiss: clearPromptSuggestionQuery) {
             promptSuggestionSheet
         }
@@ -65,12 +81,100 @@ struct InputBar: View {
     }
 
     private var composerRow: some View {
-        HStack(alignment: .bottom, spacing: 12) {
+        HStack(alignment: .bottom, spacing: 8) {
+            if pendingImages != nil, !isStreaming {
+                attachmentButton
+            }
             composerTextField
             composerPromptSuggestionButton
             composerTuneButton
             composerSendButton
         }
+    }
+
+    private var attachmentButton: some View {
+        PhotosPicker(
+            selection: $selectedPhotoItems,
+            maxSelectionCount: 1,
+            matching: .images
+        ) {
+            Image(systemName: "plus.circle.fill")
+                .font(.system(size: 24))
+                .foregroundStyle(PorchTheme.accent)
+        }
+        .buttonStyle(.plain)
+        .disabled(isStreaming)
+        .accessibilityLabel("Attach images")
+    }
+
+    private func imagePreviewRow(_ images: [ImageAttachment]) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(images) { attachment in
+                    ZStack(alignment: .topTrailing) {
+                        if let uiImage = attachment.thumbnail {
+                            Image(uiImage: uiImage)
+                                .resizable()
+                                .aspectRatio(contentMode: .fill)
+                                .frame(width: 56, height: 56)
+                                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        } else {
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(PorchTheme.inputFieldBackground)
+                                .frame(width: 56, height: 56)
+                                .overlay {
+                                    Image(systemName: "photo")
+                                        .font(.title3)
+                                        .foregroundStyle(.secondary)
+                                }
+                        }
+
+                        Button {
+                            pendingImages?.wrappedValue.removeAll { $0.id == attachment.id }
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.caption)
+                                .foregroundStyle(.white, .black.opacity(0.6))
+                        }
+                        .buttonStyle(.plain)
+                        .offset(x: 4, y: -4)
+                    }
+                }
+            }
+        }
+    }
+
+    private func loadSelectedPhotos(_ items: [PhotosPickerItem]) async {
+        var newAttachments: [ImageAttachment] = []
+        for item in items {
+            if let data = try? await item.loadTransferable(type: Data.self) {
+                #if canImport(UIKit)
+                let thumbnail = UIImage(data: data)?.preparingThumbnail(of: CGSize(width: 112, height: 112))
+                #else
+                let thumbnail: UIImage? = nil
+                #endif
+                let attachment = ImageAttachment(
+                    imageData: data,
+                    mimeType: Self.detectMimeType(from: data),
+                    thumbnail: thumbnail
+                )
+                newAttachments.append(attachment)
+            }
+        }
+        pendingImages?.wrappedValue = newAttachments
+        selectedPhotoItems = []
+    }
+
+    private static func detectMimeType(from data: Data) -> String {
+        guard data.count >= 4 else { return "image/jpeg" }
+        let header = [UInt8](data.prefix(4))
+        if header.starts(with: [0x89, 0x50, 0x4E, 0x47]) { return "image/png" }
+        if header.starts(with: [0x47, 0x49, 0x46]) { return "image/gif" }
+        // RIFF container with WEBP signature at bytes 8-11
+        if data.count >= 12,
+           header.starts(with: [0x52, 0x49, 0x46, 0x46]),
+           [UInt8](data[8..<12]) == [0x57, 0x45, 0x42, 0x50] { return "image/webp" }
+        return "image/jpeg"
     }
 
     @ViewBuilder
