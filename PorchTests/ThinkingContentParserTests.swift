@@ -79,4 +79,28 @@ final class ThinkingContentParserTests: XCTestCase {
     func testIsInsideThinkBlockFullyClosed() {
         XCTAssertFalse(ThinkingContentParser.isInsideThinkBlock("<think>a</think><think>b</think>"))
     }
+
+    // MARK: - Nested tags
+
+    func testParseWithNestedThinkTags() {
+        let input = "<think>outer<think>inner</think>outer2</think>Final."
+        let result = ThinkingContentParser.parse(input)
+        XCTAssertFalse(result.thinking.contains("<think>"), "Inner think tag should not leak into thinking content")
+        XCTAssertFalse(result.visible.contains("</think>"), "Closing tag should not leak into visible content")
+        XCTAssertEqual(result.visible, "Final.")
+    }
+
+    func testParseWithThinkBlockInMiddleOfText() {
+        let input = "Before <think>reasoning here</think> After"
+        let result = ThinkingContentParser.parse(input)
+        XCTAssertEqual(result.thinking, "reasoning here")
+        XCTAssertEqual(result.visible, "Before  After")
+    }
+
+    func testParseWithOnlyThinkingNoVisible() {
+        let input = "  <think>just thinking</think>  "
+        let result = ThinkingContentParser.parse(input)
+        XCTAssertEqual(result.thinking, "just thinking")
+        XCTAssertEqual(result.visible, "")
+    }
 }

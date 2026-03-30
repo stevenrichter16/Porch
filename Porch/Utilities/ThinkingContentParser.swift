@@ -13,27 +13,26 @@ enum ThinkingContentParser {
         var visible: String
     }
 
-    // Pre-compiled regex patterns for performance
-    private static let thinkPattern = #/<think>([\s\S]*?)<\/think>/#
-    private static let thinkingPattern = #/<thinking>([\s\S]*?)<\/thinking>/#
-
     /// Parse completed text, extracting all think blocks.
+    /// Uses iterative tag matching to correctly handle nested tags.
     static func parse(_ text: String) -> Result {
         var thinking = ""
         var visible = text
 
-        let patterns: [Regex<(Substring, Substring)>] = [thinkPattern, thinkingPattern]
+        for tagName in ["think", "thinking"] {
+            let openTag = "<\(tagName)>"
+            let closeTag = "</\(tagName)>"
 
-        for pattern in patterns {
-            let matches = visible.matches(of: pattern)
-            for match in matches {
-                let block = String(match.output.1).trimmingCharacters(in: .whitespacesAndNewlines)
+            while let openRange = visible.range(of: openTag),
+                  let closeRange = visible.range(of: closeTag, range: openRange.upperBound..<visible.endIndex) {
+                let block = String(visible[openRange.upperBound..<closeRange.lowerBound])
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
                 if !block.isEmpty {
                     if !thinking.isEmpty { thinking += "\n\n" }
                     thinking += block
                 }
+                visible.removeSubrange(openRange.lowerBound..<closeRange.upperBound)
             }
-            visible = visible.replacing(pattern, with: "")
         }
 
         visible = visible.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -43,7 +42,6 @@ enum ThinkingContentParser {
     /// Determines if the text is currently inside an open think block (tag opened but not closed).
     /// Used during streaming to show "Thinking..." indicator.
     static func isInsideThinkBlock(_ text: String) -> Bool {
-        // Count open and close tags
         let openCount = countOccurrences(of: "<think>", in: text)
             + countOccurrences(of: "<thinking>", in: text)
         let closeCount = countOccurrences(of: "</think>", in: text)

@@ -190,6 +190,7 @@ final class ChatViewModel: ObservableObject {
         streamingThinkingText = ""
         isModelThinking = false
         lastTokenUsage = nil
+        imageBase64Cache = [:]
         isStreaming = true
         stopRequested = false
         gitHubToolLoopState.reset()
@@ -263,6 +264,13 @@ final class ChatViewModel: ObservableObject {
                         persistToolResultMessage(toolCall: toolCall, result: result)
                     }
                     streamingText = ""
+
+                    // Refresh memory context if a memory was saved this round
+                    if settings.isMemoryConnectorEnabled,
+                       let memoryConnector,
+                       toolCalls.contains(where: { $0.function.name == "save_memory" }) {
+                        cachedMemorySnippet = await memoryConnector.memoryContextSnippet()
+                    }
                     // Continue the loop for another round
 
                 case .cancelled:
@@ -276,6 +284,9 @@ final class ChatViewModel: ObservableObject {
                 }
             } catch {
                 Self.logger.error("Failed to build or run tool loop round \(roundNumber): \(error.localizedDescription)")
+                streamingText = ""
+                streamingThinkingText = ""
+                isModelThinking = false
                 errorMessage = error.localizedDescription
                 return
             }
@@ -587,6 +598,7 @@ final class ChatViewModel: ObservableObject {
     }
 
     private var cachedMemorySnippet: String?
+    private var imageBase64Cache: [UUID: String] = [:]
 
     private func buildOutboundMessages() throws -> [OpenAIChatMessage] {
         var messages: [OpenAIChatMessage] = []
@@ -648,7 +660,11 @@ final class ChatViewModel: ObservableObject {
             default:
                 if let imageData = message.imageData,
                    let mimeType = message.imageMimeType {
-                    let base64 = imageData.base64EncodedString()
+                    let base64 = imageBase64Cache[message.id] ?? {
+                        let encoded = imageData.base64EncodedString()
+                        imageBase64Cache[message.id] = encoded
+                        return encoded
+                    }()
                     let dataURL = "data:\(mimeType);base64,\(base64)"
                     messages.append(OpenAIChatMessage(
                         role: message.role.rawValue,
@@ -957,8 +973,17 @@ final class ChatViewModel: ObservableObject {
 
         // Separate thinking content from visible content
         let parsed = ThinkingContentParser.parse(finalText)
-        let visibleContent = parsed.visible.isEmpty ? finalText : parsed.visible
+        let visibleContent = parsed.visible
         let thinkingContent = parsed.thinking.isEmpty ? nil : parsed.thinking
+
+        // If the model produced only thinking with no visible answer, persist it
+        // with empty content so the thinking is still accessible
+        guard !visibleContent.isEmpty || thinkingContent != nil else {
+            streamingText = ""
+            streamingThinkingText = ""
+            isModelThinking = false
+            return
+        }
 
         let assistantMessage = ChatMessage(
             role: .assistant,

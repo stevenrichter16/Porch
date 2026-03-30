@@ -64,6 +64,11 @@ final class MemoryConnector: Connector, @unchecked Sendable {
         }
 
         let args = try decodeArgs(Args.self, from: argsData)
+
+        guard !args.key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw ConnectorError.invalidArguments("Memory key cannot be empty")
+        }
+
         let context = ModelContext(modelContainer)
 
         // Upsert: check if a memory with this key exists

@@ -53,7 +53,7 @@ struct MCPSettingsView: View {
             Button("Add") {
                 let trimmedURL = newURL.trimmingCharacters(in: .whitespacesAndNewlines)
                 let trimmedName = newName.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !trimmedURL.isEmpty else { return }
+                guard !trimmedURL.isEmpty, URL(string: trimmedURL) != nil else { return }
 
                 let config = MCPServerConfig(
                     name: trimmedName.isEmpty ? "MCP Server" : trimmedName,

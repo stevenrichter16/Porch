@@ -13,6 +13,7 @@ struct InputBar: View {
     @FocusState private var isFocused: Bool
     @State private var isShowingOverrideSheet = false
     @State private var selectedPhotoItems: [PhotosPickerItem] = []
+    @State private var isLoadingPhotos = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -31,8 +32,11 @@ struct InputBar: View {
         .background(PorchTheme.chatBackground)
         .sheet(isPresented: $isShowingOverrideSheet, content: overrideSheet)
         .onChange(of: selectedPhotoItems) { _, newItems in
+            guard !isLoadingPhotos else { return }
+            isLoadingPhotos = true
             Task {
                 await loadSelectedPhotos(newItems)
+                isLoadingPhotos = false
             }
         }
     }
