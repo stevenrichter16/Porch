@@ -130,7 +130,25 @@ struct ChatListView: View {
     }
 
     @ViewBuilder
+    private var modelBar: some View {
+        if !availableModels.isEmpty {
+            Section {
+                ModelScrollBar(
+                    models: availableModels,
+                    isEnabled: isReadyForChat,
+                    onSelectModel: onCreateChat
+                )
+                .listRowInsets(EdgeInsets())
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+            }
+        }
+    }
+
+    @ViewBuilder
     private var chatListContent: some View {
+        modelBar
+
         if chats.isEmpty {
             ContentUnavailableView(
                 isReadyForChat ? "No Chats Yet" : "Setup Required",
